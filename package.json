@@ -16,5 +16,8 @@
   "bugs": {
     "url": "https://github.com/MayankSinghDobal/google-drive-backend/issues"
   },
-  "homepage": "https://github.com/MayankSinghDobal/google-drive-backend#readme"
+  "homepage": "https://github.com/MayankSinghDobal/google-drive-backend#readme",
+  "devDependencies": {
+    "typescript": "^5.9.2"
+  }
 }
