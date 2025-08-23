@@ -1,47 +1,28 @@
-import express, { Express, Request, Response } from 'express';
-import { supabase } from './config/supabase';
-import authRouter from './routes/auth';
-import fileRouter from './routes/files';
-import folderRouter from './routes/folders';
-import passport from './config/passport';
-import session from 'express-session';
+import express from 'express';
+import passport from 'passport';
+import dotenv from 'dotenv';
+import authRoutes from './routes/auth';
+import filesRoutes from './routes/files';
+import foldersRoutes from './routes/folders';
+import searchRoutes from './routes/search';
+import './config/passport'; // Initialize Passport config
 
-const app: Express = express();
-const port: number = 3000;
+dotenv.config();
 
-// Enable JSON parsing for POST requests
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Middleware
 app.use(express.json());
-
-// Enable sessions for Passport
-app.use(
-  session({
-    secret: process.env.JWT_SECRET as string,
-    resave: false,
-    saveUninitialized: false,
-  })
-);
-
-// Initialize Passport
 app.use(passport.initialize());
-app.use(passport.session());
 
-// Mount authentication, file, and folder routes
-app.use('/auth', authRouter);
-app.use('/files', fileRouter);
-app.use('/folders', folderRouter);
+// Routes
+app.use('/auth', authRoutes);
+app.use('/files', filesRoutes);
+app.use('/folders', foldersRoutes);
+app.use('/search', searchRoutes);
 
-// Test Supabase connection
-app.get('/', async (req: Request, res: Response) => {
-  try {
-    const { data, error } = await supabase.from('users').select('*').limit(1);
-    if (error) throw error;
-    res.send(`Supabase connected! Users table data: ${JSON.stringify(data)}`);
-  } catch (error: unknown) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    res.status(500).send(`Supabase connection error: ${errorMessage}`);
-  }
-});
-
-app.listen(port, () => {
-  console.log(`Server running at http://localhost:${port}`);
+// Start server
+app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
 });
