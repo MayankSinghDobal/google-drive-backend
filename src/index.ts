@@ -2,6 +2,7 @@ import express, { Express, Request, Response } from 'express';
 import { supabase } from './config/supabase';
 import authRouter from './routes/auth';
 import fileRouter from './routes/files';
+import folderRouter from './routes/folders';
 import passport from './config/passport';
 import session from 'express-session';
 
@@ -24,9 +25,10 @@ app.use(
 app.use(passport.initialize());
 app.use(passport.session());
 
-// Mount authentication and file routes
+// Mount authentication, file, and folder routes
 app.use('/auth', authRouter);
 app.use('/files', fileRouter);
+app.use('/folders', folderRouter);
 
 // Test Supabase connection
 app.get('/', async (req: Request, res: Response) => {
