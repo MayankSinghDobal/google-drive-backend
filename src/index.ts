@@ -1,12 +1,27 @@
 import express, { Express, Request, Response } from 'express';
 import { supabase } from './config/supabase';
 import authRouter from './routes/auth';
+import passport from './config/passport';
+import session from 'express-session';
 
 const app: Express = express();
 const port: number = 3000;
 
 // Enable JSON parsing for POST requests
 app.use(express.json());
+
+// Enable sessions for Passport
+app.use(
+  session({
+    secret: process.env.JWT_SECRET as string,
+    resave: false,
+    saveUninitialized: false,
+  })
+);
+
+// Initialize Passport
+app.use(passport.initialize());
+app.use(passport.session());
 
 // Mount authentication routes
 app.use('/auth', authRouter);

@@ -1,6 +1,8 @@
 import express, { Router, Request, Response } from 'express';
 import bcrypt from 'bcrypt';
+import jwt from 'jsonwebtoken';
 import { supabase } from '../config/supabase';
+import passport from '../config/passport';
 
 const router: Router = express.Router();
 
@@ -22,7 +24,7 @@ router.post('/signup', async (req: Request, res: Response) => {
       .single();
     
     if (userError && userError.code !== 'PGRST116') {
-      throw userError; // Handle errors except "no rows found"
+      throw userError;
     }
     if (existingUser) {
       return res.status(409).json({ error: 'Email already exists' });
@@ -48,26 +50,63 @@ router.post('/signup', async (req: Request, res: Response) => {
   }
 });
 
-// POST routes for login, logout (unchanged)
-router.post('/login', (req: Request, res: Response) => {
-  res.status(501).send('Login not implemented yet');
+// POST route for login
+router.post('/login', async (req: Request, res: Response) => {
+  const { email, password } = req.body;
+
+  // Basic input validation
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email and password are required' });
+  }
+
+  try {
+    // Fetch user from Supabase
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id, email, password, name')
+      .eq('email', email)
+      .single();
+
+    if (userError || !user) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
+    // Verify password with bcrypt
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+    if (!isPasswordValid) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
+    // Generate JWT
+    const token = jwt.sign(
+      { userId: user.id, email: user.email },
+      process.env.JWT_SECRET as string,
+      { expiresIn: '1h' }
+    );
+
+    res.status(200).json({ message: 'Login successful', token, user: { id: user.id, email: user.email, name: user.name } });
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({ error: `Login failed: ${errorMessage}` });
+  }
 });
 
+// POST route for logout
 router.post('/logout', (req: Request, res: Response) => {
-  res.status(501).send('Logout not implemented yet');
+  res.status(200).json({ message: 'Logout successful. Please discard your token.' });
 });
 
-// Temporary GET routes for browser testing
-router.get('/signup', (req: Request, res: Response) => {
-  res.status(200).send('GET /auth/signup works! Use POST for actual signup.');
-});
+// Google OAuth routes
+router.get('/google', passport.authenticate('google', { scope: ['profile', 'email'] }));
 
-router.get('/login', (req: Request, res: Response) => {
-  res.status(200).send('GET /auth/login works! Use POST for actual login.');
-});
-
-router.get('/logout', (req: Request, res: Response) => {
-  res.status(200).send('GET /auth/logout works! Use POST for actual logout.');
+router.get('/google/callback', passport.authenticate('google', { session: true }), (req: Request, res: Response) => {
+  const user = req.user as { id: number; email: string; name: string };
+  const token = jwt.sign(
+    { userId: user.id, email: user.email },
+    process.env.JWT_SECRET as string,
+    { expiresIn: '1h' }
+  );
+  res.status(200).json({ message: 'Google login successful', token, user });
 });
 
 export default router;
