@@ -1,5 +1,5 @@
 
-    import express, { Router, Request, Response } from 'express';
+     import express, { Router, Request, Response } from 'express';
      import multer from 'multer';
      import { supabase } from '../config/supabase';
      import { authenticateJWT } from '../middleware/auth';
@@ -9,6 +9,26 @@
 
      // Configure Multer for file uploads
      const upload = multer({ storage: multer.memoryStorage() });
+
+     // Log activity helper function
+     async function logActivity(userId: number | null, fileId: number, action: string, details: object) {
+       try {
+         const { error } = await supabase
+           .from('activity_logs')
+           .insert({
+             user_id: userId,
+             file_id: fileId,
+             action,
+             details,
+             created_at: new Date().toISOString(),
+           });
+         if (error) {
+           console.error(`Failed to log activity: ${error.message}`);
+         }
+       } catch (err) {
+         console.error(`Error logging activity: ${err instanceof Error ? err.message : 'Unknown error'}`);
+       }
+     }
 
      // File upload route
      router.post('/upload', authenticateJWT, upload.single('file'), async (req: Request, res: Response) => {
@@ -106,6 +126,13 @@
            throw versionError;
          }
 
+         // Log upload action
+         await logActivity(user.userId, fileData.id, 'upload', {
+           file_name: file.originalname,
+           size: file.size,
+           format: file.mimetype,
+         });
+
          // Get public URL for the main file
          const { data: urlData } = supabase.storage.from('drive-files').getPublicUrl(fileName);
 
@@ -191,6 +218,17 @@
            return res.status(403).json({ error: 'Unauthorized: Only the owner can delete this file' });
          }
 
+         // Fetch file name for logging
+         const { data: file, error: fileError } = await supabase
+           .from('files')
+           .select('name')
+           .eq('id', fileId)
+           .single();
+
+         if (fileError || !file) {
+           return res.status(404).json({ error: 'File not found' });
+         }
+
          // Soft delete by setting deleted_at
          const { error: deleteError } = await supabase
            .from('files')
@@ -200,6 +238,11 @@
          if (deleteError) {
            throw deleteError;
          }
+
+         // Log delete action
+         await logActivity(user.userId, parseInt(fileId), 'delete', {
+           file_name: file.name,
+         });
 
          res.status(200).json({ message: 'File soft deleted successfully' });
        } catch (error: unknown) {
@@ -248,6 +291,17 @@
            }
          }
 
+         // Fetch current file name for logging
+         const { data: currentFile, error: fileError } = await supabase
+           .from('files')
+           .select('name')
+           .eq('id', fileId)
+           .single();
+
+         if (fileError || !currentFile) {
+           return res.status(404).json({ error: 'File not found' });
+         }
+
          // Update file
          const updates: { name?: string; folder_id?: number | null } = {};
          if (name) updates.name = name;
@@ -263,6 +317,13 @@
          if (error) {
            throw error;
          }
+
+         // Log update action
+         await logActivity(user.userId, parseInt(fileId), 'update', {
+           old_name: currentFile.name,
+           new_name: name || currentFile.name,
+           folder_id: folder_id || null,
+         });
 
          // Get public URL for the updated file
          const { data: urlData } = supabase.storage.from('drive-files').getPublicUrl(data.path);
@@ -302,6 +363,17 @@
            return res.status(403).json({ error: 'Unauthorized: Only the owner can share this file' });
          }
 
+         // Fetch file name for logging
+         const { data: file, error: fileError } = await supabase
+           .from('files')
+           .select('name')
+           .eq('id', fileId)
+           .single();
+
+         if (fileError || !file) {
+           return res.status(404).json({ error: 'File not found' });
+         }
+
          // Generate unique share token
          const shareToken = uuidv4();
 
@@ -320,6 +392,13 @@
          if (insertError) {
            throw insertError;
          }
+
+         // Log share action
+         await logActivity(user.userId, parseInt(fileId), 'share', {
+           file_name: file.name,
+           role,
+           share_token: shareToken,
+         });
 
          // Generate shareable link
          const shareableLink = `http://localhost:3000/files/share/${shareToken}`;
@@ -480,6 +559,13 @@
            await supabase.from('file_versions').delete().eq('file_id', file.id).eq('version_number', nextVersionNumber);
            throw updateError;
          }
+
+         // Log edit action
+         await logActivity(null, file.id, 'edit', {
+           old_name: file.name,
+           new_name: name,
+           share_token: shareToken,
+         });
 
          // Generate signed URL for updated file
          const { data: signedUrlData, error: signedUrlError } = await supabase.storage
