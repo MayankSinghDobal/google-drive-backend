@@ -55,6 +55,23 @@ router.post('/upload', authenticateJWT, upload.single('file'), async (req: Reque
       throw dbError;
     }
 
+    // Assign 'owner' role to the uploader
+    const { error: permissionError } = await supabase
+      .from('permissions')
+      .insert({
+        file_id: fileData.id,
+        user_id: user.userId,
+        role: 'owner',
+        share_token: uuidv4(), // Unique token for owner
+      });
+
+    if (permissionError) {
+      // If permission insert fails, remove the uploaded file and metadata
+      await supabase.storage.from('drive-files').remove([fileName]);
+      await supabase.from('files').delete().eq('id', fileData.id);
+      throw permissionError;
+    }
+
     res.status(201).json({
       message: 'File uploaded successfully',
       file: fileData,
@@ -100,17 +117,17 @@ router.delete('/:fileId', authenticateJWT, async (req: Request, res: Response) =
   const { fileId } = req.params;
 
   try {
-    // Check if file exists and belongs to the user
-    const { data: file, error: fileError } = await supabase
-      .from('files')
-      .select('id, user_id')
-      .eq('id', fileId)
+    // Check if file exists and user has 'owner' role
+    const { data: permission, error: permissionError } = await supabase
+      .from('permissions')
+      .select('id')
+      .eq('file_id', fileId)
       .eq('user_id', user.userId)
-      .is('deleted_at', null)
+      .eq('role', 'owner')
       .single();
 
-    if (fileError || !file) {
-      return res.status(404).json({ error: 'File not found or unauthorized' });
+    if (permissionError || !permission) {
+      return res.status(403).json({ error: 'Unauthorized: Only the owner can delete this file' });
     }
 
     // Soft delete by setting deleted_at
@@ -142,17 +159,17 @@ router.patch('/:fileId', authenticateJWT, async (req: Request, res: Response) =>
   }
 
   try {
-    // Check if file exists and belongs to the user
-    const { data: file, error: fileError } = await supabase
-      .from('files')
-      .select('id, user_id')
-      .eq('id', fileId)
+    // Check if file exists and user has 'owner' role
+    const { data: permission, error: permissionError } = await supabase
+      .from('permissions')
+      .select('id')
+      .eq('file_id', fileId)
       .eq('user_id', user.userId)
-      .is('deleted_at', null)
+      .eq('role', 'owner')
       .single();
 
-    if (fileError || !file) {
-      return res.status(404).json({ error: 'File not found or unauthorized' });
+    if (permissionError || !permission) {
+      return res.status(403).json({ error: 'Unauthorized: Only the owner can update this file' });
     }
 
     // If folder_id is provided, verify it exists and belongs to the user
@@ -211,24 +228,24 @@ router.post('/:fileId/share', authenticateJWT, async (req: Request, res: Respons
   }
 
   try {
-    // Check if file exists and belongs to the user
-    const { data: file, error: fileError } = await supabase
-      .from('files')
-      .select('id, user_id, path')
-      .eq('id', fileId)
+    // Check if file exists and user has 'owner' role
+    const { data: permission, error: permissionError } = await supabase
+      .from('permissions')
+      .select('id')
+      .eq('file_id', fileId)
       .eq('user_id', user.userId)
-      .is('deleted_at', null)
+      .eq('role', 'owner')
       .single();
 
-    if (fileError || !file) {
-      return res.status(404).json({ error: 'File not found or unauthorized' });
+    if (permissionError || !permission) {
+      return res.status(403).json({ error: 'Unauthorized: Only the owner can share this file' });
     }
 
     // Generate unique share token
     const shareToken = uuidv4();
 
     // Insert permission into Supabase
-    const { data: permission, error: permissionError } = await supabase
+    const { data: newPermission, error: insertError } = await supabase
       .from('permissions')
       .insert({
         file_id: fileId,
@@ -239,8 +256,8 @@ router.post('/:fileId/share', authenticateJWT, async (req: Request, res: Respons
       .select('id, file_id, role, share_token')
       .single();
 
-    if (permissionError) {
-      throw permissionError;
+    if (insertError) {
+      throw insertError;
     }
 
     // Generate shareable link
@@ -248,7 +265,7 @@ router.post('/:fileId/share', authenticateJWT, async (req: Request, res: Respons
 
     res.status(201).json({
       message: 'File shared successfully',
-      permission,
+      permission: newPermission,
       shareableLink,
     });
   } catch (error: unknown) {
@@ -285,25 +302,91 @@ router.get('/share/:shareToken', async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'File not found or deleted' });
     }
 
-    // For 'view' role, return metadata with public URL
-    if (permission.role === 'view') {
-      const { data: urlData } = supabase.storage.from('drive-files').getPublicUrl(file.path);
-      return res.status(200).json({
-        message: 'Shared file retrieved successfully',
-        file: { ...file, publicUrl: urlData.publicUrl },
-        role: permission.role,
-      });
+    // Generate signed URL (expires in 1 hour)
+    const { data: signedUrlData, error: signedUrlError } = await supabase.storage
+      .from('drive-files')
+      .createSignedUrl(file.path, 3600); // 3600 seconds = 1 hour
+
+    if (signedUrlError) {
+      throw signedUrlError;
     }
 
-    // For 'edit' role, placeholder response (to be expanded later)
+    // Return metadata with signed URL
     return res.status(200).json({
       message: 'Shared file retrieved successfully',
-      file: { ...file, publicUrl: supabase.storage.from('drive-files').getPublicUrl(file.path).data.publicUrl },
+      file: { ...file, signedUrl: signedUrlData.signedUrl },
       role: permission.role,
     });
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     res.status(500).json({ error: `Shared file access failed: ${errorMessage}` });
+  }
+});
+
+// Edit shared file route
+router.patch('/share/:shareToken', async (req: Request, res: Response) => {
+  const { shareToken } = req.params;
+  const { name } = req.body;
+
+  // Validate input
+  if (!name) {
+    return res.status(400).json({ error: 'New file name is required' });
+  }
+
+  try {
+    // Check if permission exists and is 'edit'
+    const { data: permission, error: permissionError } = await supabase
+      .from('permissions')
+      .select('file_id, role')
+      .eq('share_token', shareToken)
+      .eq('role', 'edit')
+      .single();
+
+    if (permissionError || !permission) {
+      return res.status(403).json({ error: 'Invalid share link or insufficient permissions' });
+    }
+
+    // Fetch file details
+    const { data: file, error: fileError } = await supabase
+      .from('files')
+      .select('id, name, size, format, path, user_id, folder_id, created_at')
+      .eq('id', permission.file_id)
+      .is('deleted_at', null)
+      .single();
+
+    if (fileError || !file) {
+      return res.status(404).json({ error: 'File not found or deleted' });
+    }
+
+    // Update file name
+    const { data: updatedFile, error: updateError } = await supabase
+      .from('files')
+      .update({ name })
+      .eq('id', file.id)
+      .select('id, name, size, format, path, user_id, folder_id, created_at')
+      .single();
+
+    if (updateError) {
+      throw updateError;
+    }
+
+    // Generate signed URL for updated file
+    const { data: signedUrlData, error: signedUrlError } = await supabase.storage
+      .from('drive-files')
+      .createSignedUrl(file.path, 3600);
+
+    if (signedUrlError) {
+      throw signedUrlError;
+    }
+
+    res.status(200).json({
+      message: 'Shared file updated successfully',
+      file: { ...updatedFile, signedUrl: signedUrlData.signedUrl },
+      role: permission.role,
+    });
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({ error: `Shared file update failed: ${errorMessage}` });
   }
 });
 
