@@ -257,4 +257,54 @@ router.post('/:fileId/share', authenticateJWT, async (req: Request, res: Respons
   }
 });
 
+// Access shared file route
+router.get('/share/:shareToken', async (req: Request, res: Response) => {
+  const { shareToken } = req.params;
+
+  try {
+    // Check if permission exists and file is not deleted
+    const { data: permission, error: permissionError } = await supabase
+      .from('permissions')
+      .select('file_id, role')
+      .eq('share_token', shareToken)
+      .single();
+
+    if (permissionError || !permission) {
+      return res.status(404).json({ error: 'Invalid or expired share link' });
+    }
+
+    // Fetch file details
+    const { data: file, error: fileError } = await supabase
+      .from('files')
+      .select('id, name, size, format, path, user_id, folder_id, created_at')
+      .eq('id', permission.file_id)
+      .is('deleted_at', null)
+      .single();
+
+    if (fileError || !file) {
+      return res.status(404).json({ error: 'File not found or deleted' });
+    }
+
+    // For 'view' role, return metadata with public URL
+    if (permission.role === 'view') {
+      const { data: urlData } = supabase.storage.from('drive-files').getPublicUrl(file.path);
+      return res.status(200).json({
+        message: 'Shared file retrieved successfully',
+        file: { ...file, publicUrl: urlData.publicUrl },
+        role: permission.role,
+      });
+    }
+
+    // For 'edit' role, placeholder response (to be expanded later)
+    return res.status(200).json({
+      message: 'Shared file retrieved successfully',
+      file: { ...file, publicUrl: supabase.storage.from('drive-files').getPublicUrl(file.path).data.publicUrl },
+      role: permission.role,
+    });
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({ error: `Shared file access failed: ${errorMessage}` });
+  }
+});
+
 export default router;
