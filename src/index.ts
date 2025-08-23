@@ -1,6 +1,7 @@
 import express, { Express, Request, Response } from 'express';
 import { supabase } from './config/supabase';
 import authRouter from './routes/auth';
+import fileRouter from './routes/files';
 import passport from './config/passport';
 import session from 'express-session';
 
@@ -23,8 +24,9 @@ app.use(
 app.use(passport.initialize());
 app.use(passport.session());
 
-// Mount authentication routes
+// Mount authentication and file routes
 app.use('/auth', authRouter);
+app.use('/files', fileRouter);
 
 // Test Supabase connection
 app.get('/', async (req: Request, res: Response) => {
