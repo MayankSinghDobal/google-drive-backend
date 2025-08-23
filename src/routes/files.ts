@@ -4,6 +4,7 @@
      import { supabase } from '../config/supabase';
      import { authenticateJWT } from '../middleware/auth';
      import { v4 as uuidv4 } from 'uuid';
+     import { io } from '../index';
 
      const router: Router = express.Router();
 
@@ -567,6 +568,13 @@
            share_token: shareToken,
          });
 
+         // Broadcast update to file's channel
+         io.to(`file:${file.id}`).emit('file_updated', {
+           file_id: file.id,
+           new_name: name,
+           updated_at: new Date().toISOString(),
+         });
+
          // Generate signed URL for updated file
          const { data: signedUrlData, error: signedUrlError } = await supabase.storage
            .from('drive-files')
@@ -584,6 +592,47 @@
        } catch (error: unknown) {
          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
          res.status(500).json({ error: `Shared file update failed: ${errorMessage}` });
+       }
+     });
+
+     // Subscribe to file updates (for testing via HTTP, though clients will use WebSocket)
+     router.get('/:fileId/subscribe', authenticateJWT, async (req: Request, res: Response) => {
+       const user = req.user as { userId: number; email: string };
+       const { fileId } = req.params;
+
+       try {
+         // Check if file exists and user has access (owner or shared permission)
+         const { data: permission, error: permissionError } = await supabase
+           .from('permissions')
+           .select('id, role')
+           .eq('file_id', fileId)
+           .or(`user_id.eq.${user.userId},role.in.(view,edit)`)
+           .single();
+
+         if (permissionError || !permission) {
+           return res.status(403).json({ error: 'Unauthorized: No access to this file' });
+         }
+
+         // Fetch file details
+         const { data: file, error: fileError } = await supabase
+           .from('files')
+           .select('id, name, user_id')
+           .eq('id', fileId)
+           .is('deleted_at', null)
+           .single();
+
+         if (fileError || !file) {
+           return res.status(404).json({ error: 'File not found or deleted' });
+         }
+
+         res.status(200).json({
+           message: 'Subscribed to file updates',
+           file_id: fileId,
+           instructions: 'Connect to WebSocket at ws://localhost:3000 and emit "join_file" with fileId',
+         });
+       } catch (error: unknown) {
+         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+         res.status(500).json({ error: `Subscription failed: ${errorMessage}` });
        }
      });
 
