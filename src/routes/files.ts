@@ -65,4 +65,68 @@ router.post('/upload', authenticateJWT, upload.single('file'), async (req: Reque
   }
 });
 
+// File retrieval route
+router.get('/', authenticateJWT, async (req: Request, res: Response) => {
+  const user = req.user as { userId: number; email: string };
+
+  try {
+    const { data, error } = await supabase
+      .from('files')
+      .select('id, name, size, format, path, user_id, created_at')
+      .eq('user_id', user.userId)
+      .is('deleted_at', null); // Exclude soft-deleted files
+
+    if (error) {
+      throw error;
+    }
+
+    // Add public URLs to each file
+    const filesWithUrls = data.map((file) => ({
+      ...file,
+      publicUrl: supabase.storage.from('drive-files').getPublicUrl(file.path).data.publicUrl,
+    }));
+
+    res.status(200).json({ message: 'Files retrieved successfully', files: filesWithUrls });
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({ error: `File retrieval failed: ${errorMessage}` });
+  }
+});
+
+// Soft delete file route
+router.delete('/:fileId', authenticateJWT, async (req: Request, res: Response) => {
+  const user = req.user as { userId: number; email: string };
+  const { fileId } = req.params;
+
+  try {
+    // Check if file exists and belongs to the user
+    const { data: file, error: fileError } = await supabase
+      .from('files')
+      .select('id, user_id')
+      .eq('id', fileId)
+      .eq('user_id', user.userId)
+      .is('deleted_at', null)
+      .single();
+
+    if (fileError || !file) {
+      return res.status(404).json({ error: 'File not found or unauthorized' });
+    }
+
+    // Soft delete by setting deleted_at
+    const { error: deleteError } = await supabase
+      .from('files')
+      .update({ deleted_at: new Date().toISOString() })
+      .eq('id', fileId);
+
+    if (deleteError) {
+      throw deleteError;
+    }
+
+    res.status(200).json({ message: 'File soft deleted successfully' });
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({ error: `File deletion failed: ${errorMessage}` });
+  }
+});
+
 export default router;
