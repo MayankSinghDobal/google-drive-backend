@@ -83,16 +83,26 @@ router.post('/upload', authenticateJWT, upload.single('file'), async (req: Reque
   }
 });
 
-// File retrieval route
 router.get('/', authenticateJWT, async (req: Request, res: Response) => {
   const user = req.user as { userId: number; email: string };
+  const { page = '1', limit = '10' } = req.query;
+
+  const pageNum = parseInt(page as string, 10);
+  const limitNum = parseInt(limit as string, 10);
+
+  if (isNaN(pageNum) || pageNum < 1 || isNaN(limitNum) || limitNum < 1 || limitNum > 100) {
+    return res.status(400).json({ error: 'Invalid page or limit parameter' });
+  }
+
+  const offset = (pageNum - 1) * limitNum;
 
   try {
-    const { data, error } = await supabase
+    const { data, error, count } = await supabase
       .from('files')
-      .select('id, name, size, format, path, user_id, created_at')
+      .select('id, name, size, format, path, user_id, created_at', { count: 'exact' })
       .eq('user_id', user.userId)
-      .is('deleted_at', null); // Exclude soft-deleted files
+      .is('deleted_at', null)
+      .range(offset, offset + limitNum - 1);
 
     if (error) {
       throw error;
@@ -104,7 +114,20 @@ router.get('/', authenticateJWT, async (req: Request, res: Response) => {
       publicUrl: supabase.storage.from('drive-files').getPublicUrl(file.path).data.publicUrl,
     }));
 
-    res.status(200).json({ message: 'Files retrieved successfully', files: filesWithUrls });
+    // Calculate pagination metadata
+    const totalItems = count || 0;
+    const totalPages = Math.ceil(totalItems / limitNum);
+
+    res.status(200).json({
+      message: 'Files retrieved successfully',
+      files: filesWithUrls,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        totalItems,
+        totalPages,
+      },
+    });
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     res.status(500).json({ error: `File retrieval failed: ${errorMessage}` });

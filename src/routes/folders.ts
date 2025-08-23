@@ -52,32 +52,46 @@ router.post('/create', authenticateJWT, async (req: Request, res: Response) => {
   }
 });
 
-// List folders route
+// Folder retrieval route with pagination
 router.get('/', authenticateJWT, async (req: Request, res: Response) => {
   const user = req.user as { userId: number; email: string };
-  const { parent_id } = req.query; // Optional: filter by parent_id
+  const { page = '1', limit = '10' } = req.query;
+
+  const pageNum = parseInt(page as string, 10);
+  const limitNum = parseInt(limit as string, 10);
+
+  if (isNaN(pageNum) || pageNum < 1 || isNaN(limitNum) || limitNum < 1 || limitNum > 100) {
+    return res.status(400).json({ error: 'Invalid page or limit parameter' });
+  }
+
+  const offset = (pageNum - 1) * limitNum;
 
   try {
-    let query = supabase
+    const { data, error, count } = await supabase
       .from('folders')
-      .select('id, name, user_id, parent_id, created_at')
+      .select('id, name, user_id, parent_id, created_at', { count: 'exact' })
       .eq('user_id', user.userId)
-      .is('deleted_at', null); // Exclude soft-deleted folders
-
-    // Filter by parent_id if provided (null for root folders)
-    if (parent_id === 'null') {
-      query = query.is('parent_id', null);
-    } else if (parent_id) {
-      query = query.eq('parent_id', parent_id);
-    }
-
-    const { data, error } = await query;
+      .is('deleted_at', null)
+      .range(offset, offset + limitNum - 1);
 
     if (error) {
       throw error;
     }
 
-    res.status(200).json({ message: 'Folders retrieved successfully', folders: data });
+    // Calculate pagination metadata
+    const totalItems = count || 0;
+    const totalPages = Math.ceil(totalItems / limitNum);
+
+    res.status(200).json({
+      message: 'Folders retrieved successfully',
+      folders: data,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        totalItems,
+        totalPages,
+      },
+    });
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     res.status(500).json({ error: `Folder retrieval failed: ${errorMessage}` });
