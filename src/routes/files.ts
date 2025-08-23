@@ -2,6 +2,7 @@ import express, { Router, Request, Response } from 'express';
 import multer from 'multer';
 import { supabase } from '../config/supabase';
 import { authenticateJWT } from '../middleware/auth';
+import { v4 as uuidv4 } from 'uuid';
 
 const router: Router = express.Router();
 
@@ -195,6 +196,64 @@ router.patch('/:fileId', authenticateJWT, async (req: Request, res: Response) =>
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     res.status(500).json({ error: `File update failed: ${errorMessage}` });
+  }
+});
+
+// Share file route
+router.post('/:fileId/share', authenticateJWT, async (req: Request, res: Response) => {
+  const user = req.user as { userId: number; email: string };
+  const { fileId } = req.params;
+  const { role } = req.body;
+
+  // Validate input
+  if (!role || !['view', 'edit'].includes(role)) {
+    return res.status(400).json({ error: 'Valid role (view or edit) is required' });
+  }
+
+  try {
+    // Check if file exists and belongs to the user
+    const { data: file, error: fileError } = await supabase
+      .from('files')
+      .select('id, user_id, path')
+      .eq('id', fileId)
+      .eq('user_id', user.userId)
+      .is('deleted_at', null)
+      .single();
+
+    if (fileError || !file) {
+      return res.status(404).json({ error: 'File not found or unauthorized' });
+    }
+
+    // Generate unique share token
+    const shareToken = uuidv4();
+
+    // Insert permission into Supabase
+    const { data: permission, error: permissionError } = await supabase
+      .from('permissions')
+      .insert({
+        file_id: fileId,
+        user_id: null, // Null for public links
+        role,
+        share_token: shareToken,
+      })
+      .select('id, file_id, role, share_token')
+      .single();
+
+    if (permissionError) {
+      throw permissionError;
+    }
+
+    // Generate shareable link
+    const shareableLink = `http://localhost:3000/files/share/${shareToken}`;
+
+    res.status(201).json({
+      message: 'File shared successfully',
+      permission,
+      shareableLink,
+    });
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    res.status(500).json({ error: `File sharing failed: ${errorMessage}` });
   }
 });
 
