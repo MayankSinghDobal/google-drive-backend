@@ -3,6 +3,7 @@ import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { supabase } from '../config/supabase';
 import passport from '../config/passport';
+import { authenticateJWT } from '../middleware/auth';
 
 const router: Router = express.Router();
 
@@ -107,6 +108,11 @@ router.get('/google/callback', passport.authenticate('google', { session: true }
     { expiresIn: '1h' }
   );
   res.status(200).json({ message: 'Google login successful', token, user });
+});
+
+// Test protected route
+router.get('/protected', authenticateJWT, (req: Request, res: Response) => {
+  res.status(200).json({ message: 'Access granted to protected route', user: req.user });
 });
 
 export default router;
