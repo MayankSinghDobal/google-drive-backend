@@ -13,57 +13,62 @@ import cors from "cors";
 const app = express();
 const server = http.createServer(app);
 
-// CORS Configuration - Fix the origins
-const allowedOrigins = [
-  "http://localhost:5173",
-  "http://localhost:3000",
-  "https://your-frontend-domain.vercel.app", // Replace with your actual frontend domain
-];
+// Simple CORS configuration for Vercel
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', 'http://localhost:5173');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  
+  // Handle preflight requests
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
+  
+  next();
+});
 
-// Apply CORS middleware BEFORE other middleware
+// Additional CORS middleware
 app.use(
   cors({
-    origin: function (origin, callback) {
-      // Allow requests with no origin (mobile apps, curl, etc.)
-      if (!origin) return callback(null, true);
-      
-      if (allowedOrigins.indexOf(origin) !== -1) {
-        callback(null, true);
-      } else {
-        callback(new Error('Not allowed by CORS'));
-      }
-    },
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    origin: ['http://localhost:5173', 'http://localhost:3000'],
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     credentials: true,
-    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
-    optionsSuccessStatus: 200, // For legacy browser support
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    optionsSuccessStatus: 200,
   })
 );
 
-// Handle preflight requests
-app.options('*', cors({
-  origin: allowedOrigins,
-  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  credentials: true,
-  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
-}));
-
 const io = new SocketIOServer(server, {
   cors: {
-    origin: allowedOrigins,
+    origin: ["http://localhost:5173", "http://localhost:3000"],
     methods: ["GET", "POST", "OPTIONS"],
     credentials: true,
   },
 });
 
 // Other Middleware
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(passport.initialize());
 
 // Health check endpoint
 app.get("/", (req, res) => {
-  res.json({ message: "Google Drive Backend API is running!" });
+  res.json({ 
+    message: "Google Drive Backend API is running!",
+    timestamp: new Date().toISOString(),
+    cors: "enabled"
+  });
+});
+
+// Test endpoint to check CORS
+app.get("/test", (req, res) => {
+  res.json({ 
+    message: "CORS test successful",
+    origin: req.headers.origin,
+    method: req.method
+  });
 });
 
 // Routes
@@ -71,6 +76,15 @@ app.use("/auth", authRoutes);
 app.use("/files", fileRoutes);
 app.use("/folders", folderRoutes);
 app.use("/search", searchRoutes);
+
+// Error handling middleware
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  console.error('Error:', err);
+  res.status(500).json({ 
+    error: 'Internal server error',
+    message: err.message 
+  });
+});
 
 // WebSocket connection
 io.on("connection", (socket) => {
@@ -111,5 +125,5 @@ export { io };
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
-  console.log(`Allowed origins: ${allowedOrigins.join(', ')}`);
+  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
 });
