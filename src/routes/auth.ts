@@ -1,118 +1,190 @@
-import express, { Router, Request, Response } from 'express';
-import bcrypt from 'bcrypt';
-import jwt from 'jsonwebtoken';
-import { supabase } from '../config/supabase';
-import passport from '../config/passport';
-import { authenticateJWT } from '../middleware/auth';
+import express, { Router, Request, Response } from "express";
+import bcrypt from "bcrypt";
+import jwt from "jsonwebtoken";
+import { supabase } from "../config/supabase";
+import passport from "../config/passport";
+import { authenticateJWT } from "../middleware/auth";
+import { OAuth2Client } from "google-auth-library";
 
 const router: Router = express.Router();
 
-// POST route for signup
-router.post('/signup', async (req: Request, res: Response) => {
+const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+
+// Regular signup
+router.post("/signup", async (req: Request, res: Response) => {
   const { email, password, name } = req.body;
-
-  // Basic input validation
   if (!email || !password) {
-    return res.status(400).json({ error: 'Email and password are required' });
+    return res.status(400).json({ error: "Email and password are required" });
   }
-
   try {
-    // Check if email already exists
     const { data: existingUser, error: userError } = await supabase
-      .from('users')
-      .select('id')
-      .eq('email', email)
+      .from("users")
+      .select("id")
+      .eq("email", email)
       .single();
-    
-    if (userError && userError.code !== 'PGRST116') {
+    if (userError && userError.code !== "PGRST116") {
       throw userError;
     }
     if (existingUser) {
-      return res.status(409).json({ error: 'Email already exists' });
+      return res.status(409).json({ error: "Email already exists" });
     }
-
-    // Hash password with bcrypt
     const saltRounds = 10;
     const hashedPassword = await bcrypt.hash(password, saltRounds);
-
-    // Insert new user into Supabase
     const { data, error } = await supabase
-      .from('users')
+      .from("users")
       .insert([{ email, password: hashedPassword, name }])
-      .select('id, email, name')
+      .select("id, email, name")
       .single();
-
     if (error) throw error;
-
-    res.status(201).json({ message: 'User created successfully', user: data });
+    const token = jwt.sign(
+      { userId: data.id, email: data.email },
+      process.env.JWT_SECRET as string,
+      { expiresIn: "1h" }
+    );
+    res
+      .status(201)
+      .json({ message: "User created successfully", token, user: data });
   } catch (error: unknown) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    const errorMessage =
+      error instanceof Error ? error.message : "Unknown error";
     res.status(500).json({ error: `Signup failed: ${errorMessage}` });
   }
 });
 
-// POST route for login
-router.post('/login', async (req: Request, res: Response) => {
+// Regular login
+router.post("/login", async (req: Request, res: Response) => {
   const { email, password } = req.body;
-
-  // Basic input validation
   if (!email || !password) {
-    return res.status(400).json({ error: 'Email and password are required' });
+    return res.status(400).json({ error: "Email and password are required" });
   }
-
   try {
-    // Fetch user from Supabase
     const { data: user, error: userError } = await supabase
-      .from('users')
-      .select('id, email, password, name')
-      .eq('email', email)
+      .from("users")
+      .select("id, email, name, password")
+      .eq("email", email)
       .single();
-
     if (userError || !user) {
-      return res.status(401).json({ error: 'Invalid email or password' });
+      return res.status(401).json({ error: "Invalid email or password" });
     }
-
-    // Verify password with bcrypt
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
-      return res.status(401).json({ error: 'Invalid email or password' });
+      return res.status(401).json({ error: "Invalid email or password" });
     }
-
-    // Generate JWT
     const token = jwt.sign(
       { userId: user.id, email: user.email },
       process.env.JWT_SECRET as string,
-      { expiresIn: '1h' }
+      { expiresIn: "1h" }
     );
-
-    res.status(200).json({ message: 'Login successful', token, user: { id: user.id, email: user.email, name: user.name } });
+    res.status(200).json({
+      message: "Login successful",
+      token,
+      user: { id: user.id, email: user.email, name: user.name },
+    });
   } catch (error: unknown) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    const errorMessage =
+      error instanceof Error ? error.message : "Unknown error";
     res.status(500).json({ error: `Login failed: ${errorMessage}` });
   }
 });
 
-// POST route for logout
-router.post('/logout', (req: Request, res: Response) => {
-  res.status(200).json({ message: 'Logout successful. Please discard your token.' });
+// Google login (client-side JWT)
+router.post("/google", async (req: Request, res: Response) => {
+  const { credential } = req.body;
+  if (!credential) {
+    return res.status(400).json({ error: "Google credential is required" });
+  }
+
+  try {
+    const ticket = await googleClient.verifyIdToken({
+      idToken: credential,
+      audience: process.env.GOOGLE_CLIENT_ID,
+    });
+    const payload = ticket.getPayload();
+    if (!payload || !payload.email) {
+      return res.status(400).json({ error: "Invalid Google credential" });
+    }
+
+    const { email, name } = payload;
+
+    // Check for existing user
+    const { data: existingUser, error: userError } = await supabase
+      .from("users")
+      .select("id, email, name")
+      .eq("email", email)
+      .single();
+
+    if (userError && userError.code !== "PGRST116") {
+      throw userError;
+    }
+
+    let user;
+    if (existingUser) {
+      user = existingUser;
+    } else {
+      // Create new user
+      const { data: newUser, error } = await supabase
+        .from("users")
+        .insert([{ email, name }])
+        .select("id, email, name")
+        .single();
+      if (error) throw error;
+      user = newUser;
+    }
+
+    const token = jwt.sign(
+      { userId: user.id, email: user.email },
+      process.env.JWT_SECRET as string,
+      { expiresIn: "1h" }
+    );
+
+    res.status(200).json({
+      message: "Google login successful",
+      token,
+      user: { id: user.id, email: user.email, name: user.name },
+    });
+  } catch (error: unknown) {
+    const errorMessage =
+      error instanceof Error ? error.message : "Unknown error";
+    res.status(500).json({ error: `Google login failed: ${errorMessage}` });
+  }
 });
 
-// Google OAuth routes
-router.get('/google', passport.authenticate('google', { scope: ['profile', 'email'] }));
-
-router.get('/google/callback', passport.authenticate('google', { session: true }), (req: Request, res: Response) => {
-  const user = req.user as { id: number; email: string; name: string };
-  const token = jwt.sign(
-    { userId: user.id, email: user.email },
-    process.env.JWT_SECRET as string,
-    { expiresIn: '1h' }
-  );
-  res.status(200).json({ message: 'Google login successful', token, user });
+// Logout
+router.post("/logout", (req: Request, res: Response) => {
+  res
+    .status(200)
+    .json({ message: "Logout successful. Please discard your token." });
 });
 
-// Test protected route
-router.get('/protected', authenticateJWT, (req: Request, res: Response) => {
-  res.status(200).json({ message: 'Access granted to protected route', user: req.user });
+// Server-side Google OAuth routes (optional, kept for reference)
+router.get(
+  "/google",
+  passport.authenticate("google", { scope: ["profile", "email"] })
+);
+
+router.get(
+  "/google/callback",
+  passport.authenticate("google", { session: false }),
+  (req: Request, res: Response) => {
+    const user = req.user as { id: number; email: string; name: string };
+    const token = jwt.sign(
+      { userId: user.id, email: user.email },
+      process.env.JWT_SECRET as string,
+      { expiresIn: "1h" }
+    );
+    res.redirect(
+      `http://localhost:5173/auth/callback?token=${token}&user=${encodeURIComponent(
+        JSON.stringify(user)
+      )}`
+    );
+  }
+);
+
+// Protected route
+router.get("/protected", authenticateJWT, (req: Request, res: Response) => {
+  res
+    .status(200)
+    .json({ message: "Access granted to protected route", user: req.user });
 });
 
 export default router;
