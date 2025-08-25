@@ -10,6 +10,28 @@ const router: Router = express.Router();
 
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
+// Add the missing /me endpoint
+router.get("/me", authenticateJWT, async (req: Request, res: Response) => {
+  try {
+    const user = req.user as { userId: number; email: string };
+    
+    const { data, error } = await supabase
+      .from("users")
+      .select("id, email, name")
+      .eq("id", user.userId)
+      .single();
+
+    if (error) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    res.status(200).json({ user: data });
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : "Unknown error";
+    res.status(500).json({ error: `Failed to get user: ${errorMessage}` });
+  }
+});
+
 // Regular signup
 router.post("/signup", async (req: Request, res: Response) => {
   const { email, password, name } = req.body;
@@ -39,7 +61,7 @@ router.post("/signup", async (req: Request, res: Response) => {
     const token = jwt.sign(
       { userId: data.id, email: data.email },
       process.env.JWT_SECRET as string,
-      { expiresIn: "1h" }
+      { expiresIn: "24h" } // Extended expiration
     );
     res
       .status(201)
@@ -73,7 +95,7 @@ router.post("/login", async (req: Request, res: Response) => {
     const token = jwt.sign(
       { userId: user.id, email: user.email },
       process.env.JWT_SECRET as string,
-      { expiresIn: "1h" }
+      { expiresIn: "24h" } // Extended expiration
     );
     res.status(200).json({
       message: "Login successful",
@@ -134,7 +156,7 @@ router.post("/google", async (req: Request, res: Response) => {
     const token = jwt.sign(
       { userId: user.id, email: user.email },
       process.env.JWT_SECRET as string,
-      { expiresIn: "1h" }
+      { expiresIn: "24h" } // Extended expiration
     );
 
     res.status(200).json({
@@ -158,7 +180,7 @@ router.post("/logout", (req: Request, res: Response) => {
 
 // Server-side Google OAuth routes (optional, kept for reference)
 router.get(
-  "/google",
+  "/google/oauth",
   passport.authenticate("google", { scope: ["profile", "email"] })
 );
 
@@ -170,8 +192,9 @@ router.get(
     const token = jwt.sign(
       { userId: user.id, email: user.email },
       process.env.JWT_SECRET as string,
-      { expiresIn: "1h" }
+      { expiresIn: "24h" }
     );
+    // Update the redirect URL to match your frontend
     res.redirect(
       `http://localhost:5173/auth/callback?token=${token}&user=${encodeURIComponent(
         JSON.stringify(user)

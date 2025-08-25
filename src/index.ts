@@ -12,31 +12,59 @@ import cors from "cors";
 
 const app = express();
 const server = http.createServer(app);
+
+// CORS Configuration - Fix the origins
+const allowedOrigins = [
+  "http://localhost:5173",
+  "http://localhost:3000",
+  "https://your-frontend-domain.vercel.app", // Replace with your actual frontend domain
+];
+
+// Apply CORS middleware BEFORE other middleware
+app.use(
+  cors({
+    origin: function (origin, callback) {
+      // Allow requests with no origin (mobile apps, curl, etc.)
+      if (!origin) return callback(null, true);
+      
+      if (allowedOrigins.indexOf(origin) !== -1) {
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
+    },
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    credentials: true,
+    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+    optionsSuccessStatus: 200, // For legacy browser support
+  })
+);
+
+// Handle preflight requests
+app.options('*', cors({
+  origin: allowedOrigins,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  credentials: true,
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+}));
+
 const io = new SocketIOServer(server, {
   cors: {
-    origin: [
-      "http://localhost:5173",
-      "https://google-drive-frontend-xxx.vercel.app",
-    ],
+    origin: allowedOrigins,
     methods: ["GET", "POST", "OPTIONS"],
     credentials: true,
   },
 });
 
-// Middleware
-app.use(
-  cors({
-    origin: [
-      "http://localhost:5173",
-      "https://google-drive-frontend-xxx.vercel.app",
-    ],
-    methods: ["GET", "POST", "OPTIONS"],
-    credentials: true,
-    allowedHeaders: ["Content-Type", "Authorization"],
-  })
-);
+// Other Middleware
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 app.use(passport.initialize());
+
+// Health check endpoint
+app.get("/", (req, res) => {
+  res.json({ message: "Google Drive Backend API is running!" });
+});
 
 // Routes
 app.use("/auth", authRoutes);
@@ -83,4 +111,5 @@ export { io };
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  console.log(`Allowed origins: ${allowedOrigins.join(', ')}`);
 });
