@@ -10,7 +10,16 @@ const router: Router = express.Router();
 
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
-// Add the missing /me endpoint
+// Debug middleware for all auth routes
+router.use((req, res, next) => {
+  console.log(`[AUTH] ${req.method} ${req.path}`, {
+    origin: req.headers.origin,
+    userAgent: req.headers['user-agent']?.substring(0, 50) + '...',
+  });
+  next();
+});
+
+// /me endpoint
 router.get("/me", authenticateJWT, async (req: Request, res: Response) => {
   try {
     const user = req.user as { userId: number; email: string };
@@ -22,11 +31,13 @@ router.get("/me", authenticateJWT, async (req: Request, res: Response) => {
       .single();
 
     if (error) {
+      console.error("Fetch user error:", error);
       return res.status(404).json({ error: "User not found" });
     }
 
     res.status(200).json({ user: data });
   } catch (error: unknown) {
+    console.error("Fetch user error:", error);
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     res.status(500).json({ error: `Failed to get user: ${errorMessage}` });
   }
@@ -45,6 +56,7 @@ router.post("/signup", async (req: Request, res: Response) => {
       .eq("email", email)
       .single();
     if (userError && userError.code !== "PGRST116") {
+      console.error("Check user error:", userError);
       throw userError;
     }
     if (existingUser) {
@@ -57,18 +69,23 @@ router.post("/signup", async (req: Request, res: Response) => {
       .insert([{ email, password: hashedPassword, name }])
       .select("id, email, name")
       .single();
-    if (error) throw error;
+    if (error) {
+      console.error("Insert user error:", error);
+      throw error;
+    }
     const token = jwt.sign(
       { userId: data.id, email: data.email },
       process.env.JWT_SECRET as string,
-      { expiresIn: "24h" } // Extended expiration
+      { expiresIn: "24h" }
     );
-    res
-      .status(201)
-      .json({ message: "User created successfully", token, user: data });
+    res.status(201).json({
+      message: "Signup successful",
+      token,
+      user: data,
+    });
   } catch (error: unknown) {
-    const errorMessage =
-      error instanceof Error ? error.message : "Unknown error";
+    console.error("Signup error:", error);
+    const errorMessage = error instanceof Error ? error.message : "Unknown error";
     res.status(500).json({ error: `Signup failed: ${errorMessage}` });
   }
 });
@@ -86,16 +103,18 @@ router.post("/login", async (req: Request, res: Response) => {
       .eq("email", email)
       .single();
     if (userError || !user) {
-      return res.status(401).json({ error: "Invalid email or password" });
+      console.error("User not found:", email);
+      return res.status(401).json({ error: "Invalid credentials" });
     }
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
-      return res.status(401).json({ error: "Invalid email or password" });
+      console.error("Invalid password for:", email);
+      return res.status(401).json({ error: "Invalid credentials" });
     }
     const token = jwt.sign(
       { userId: user.id, email: user.email },
       process.env.JWT_SECRET as string,
-      { expiresIn: "24h" } // Extended expiration
+      { expiresIn: "24h" }
     );
     res.status(200).json({
       message: "Login successful",
@@ -103,82 +122,75 @@ router.post("/login", async (req: Request, res: Response) => {
       user: { id: user.id, email: user.email, name: user.name },
     });
   } catch (error: unknown) {
-    const errorMessage =
-      error instanceof Error ? error.message : "Unknown error";
+    console.error("Login error:", error);
+    const errorMessage = error instanceof Error ? error.message : "Unknown error";
     res.status(500).json({ error: `Login failed: ${errorMessage}` });
   }
 });
 
-// Google login (client-side JWT)
+// Google OAuth login via token
 router.post("/google", async (req: Request, res: Response) => {
-  const { credential } = req.body;
-  if (!credential) {
-    return res.status(400).json({ error: "Google credential is required" });
+  const { token } = req.body;
+  if (!token) {
+    return res.status(400).json({ error: "Google token is required" });
   }
-
   try {
     const ticket = await googleClient.verifyIdToken({
-      idToken: credential,
+      idToken: token,
       audience: process.env.GOOGLE_CLIENT_ID,
     });
     const payload = ticket.getPayload();
     if (!payload || !payload.email) {
-      return res.status(400).json({ error: "Invalid Google credential" });
+      console.error("Invalid Google token payload");
+      return res.status(401).json({ error: "Invalid Google token" });
     }
-
-    const { email, name } = payload;
-
-    // Check for existing user
+    let user;
     const { data: existingUser, error: userError } = await supabase
       .from("users")
       .select("id, email, name")
-      .eq("email", email)
+      .eq("email", payload.email)
       .single();
-
     if (userError && userError.code !== "PGRST116") {
+      console.error("Fetch user error:", userError);
       throw userError;
     }
-
-    let user;
     if (existingUser) {
       user = existingUser;
     } else {
-      // Create new user
       const { data: newUser, error } = await supabase
         .from("users")
-        .insert([{ email, name }])
+        .insert([{ email: payload.email, name: payload.name }])
         .select("id, email, name")
         .single();
-      if (error) throw error;
+      if (error) {
+        console.error("Insert user error:", error);
+        throw error;
+      }
       user = newUser;
     }
-
-    const token = jwt.sign(
+    const jwtToken = jwt.sign(
       { userId: user.id, email: user.email },
       process.env.JWT_SECRET as string,
-      { expiresIn: "24h" } // Extended expiration
+      { expiresIn: "24h" }
     );
-
     res.status(200).json({
       message: "Google login successful",
-      token,
+      token: jwtToken,
       user: { id: user.id, email: user.email, name: user.name },
     });
   } catch (error: unknown) {
-    const errorMessage =
-      error instanceof Error ? error.message : "Unknown error";
+    console.error("Google login error:", error);
+    const errorMessage = error instanceof Error ? error.message : "Unknown error";
     res.status(500).json({ error: `Google login failed: ${errorMessage}` });
   }
 });
 
 // Logout
 router.post("/logout", (req: Request, res: Response) => {
-  res
-    .status(200)
-    .json({ message: "Logout successful. Please discard your token." });
+  res.status(200).json({ message: "Logout successful. Please discard your token." });
 });
 
-// Server-side Google OAuth routes (optional, kept for reference)
+// Server-side Google OAuth routes - FIXED ROUTE NAMES
 router.get(
   "/google/oauth",
   passport.authenticate("google", { scope: ["profile", "email"] })
@@ -194,9 +206,11 @@ router.get(
       process.env.JWT_SECRET as string,
       { expiresIn: "24h" }
     );
-    // Update the redirect URL to match your frontend
+    const frontendUrl = process.env.NODE_ENV === 'production'
+      ? 'https://google-drive-frontend-2cxh.vercel.app'
+      : 'http://localhost:5173';
     res.redirect(
-      `http://localhost:5173/auth/callback?token=${token}&user=${encodeURIComponent(
+      `${frontendUrl}/auth/callback?token=${token}&user=${encodeURIComponent(
         JSON.stringify(user)
       )}`
     );
@@ -205,9 +219,7 @@ router.get(
 
 // Protected route
 router.get("/protected", authenticateJWT, (req: Request, res: Response) => {
-  res
-    .status(200)
-    .json({ message: "Access granted to protected route", user: req.user });
+  res.status(200).json({ message: "Access granted to protected route", user: req.user });
 });
 
 export default router;

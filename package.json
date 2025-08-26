@@ -2,11 +2,14 @@
   "name": "google-drive-backend",
   "version": "1.0.0",
   "description": "Backend for Google Drive Clone",
-  "main": "index.js",
+  "main": "dist/index.js",
   "scripts": {
     "test": "jest",
     "start": "node dist/index.js",
-    "build": "tsc"
+    "build": "tsc",
+    "dev": "ts-node src/index.ts",
+    "dev:watch": "nodemon --exec ts-node src/index.ts",
+    "clean": "rimraf dist"
   },
   "repository": {
     "type": "git",
@@ -20,13 +23,16 @@
   },
   "homepage": "https://github.com/MayankSinghDobal/google-drive-backend#readme",
   "devDependencies": {
+    "@types/cors": "^2.8.19",
     "@types/jest": "^29.5.12",
     "@types/socket.io": "^3.0.2",
     "@types/supertest": "^2.0.16",
     "@types/uuid": "^10.0.0",
     "jest": "^29.7.0",
+    "nodemon": "^3.1.10",
     "supertest": "^6.3.4",
     "ts-jest": "^29.1.2",
+    "ts-node": "^10.9.2",
     "typescript": "^5.9.2"
   },
   "dependencies": {

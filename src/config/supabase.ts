@@ -17,8 +17,10 @@ console.log('Supabase configuration loaded successfully');
 
 export const supabase = createClient(supabaseUrl, supabaseKey, {
   auth: {
-    autoRefreshToken: false,
-    persistSession: false
+    autoRefreshToken: true,
+    persistSession: true,
+    detectSessionInUrl: true,
+    flowType: 'implicit',
   }
 });
 
@@ -35,7 +37,7 @@ export const testSupabaseConnection = async () => {
       return false;
     }
     
-    console.log('Supabase connection test successful');
+    console.log('Supabase connection test successful:', { count: data });
     return true;
   } catch (err) {
     console.error('Supabase connection test error:', err);
