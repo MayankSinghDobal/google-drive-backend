@@ -11,7 +11,7 @@ import { supabase } from "./config/supabase";
 import cors from "cors";
 import path from "path";
 
-// Check for missing settings to avoid crashes
+// Check for missing environment variables
 const requiredEnvVars = [
   "SUPABASE_URL",
   "SUPABASE_ANON_KEY",
@@ -19,29 +19,31 @@ const requiredEnvVars = [
   "GOOGLE_CLIENT_ID",
   "GOOGLE_CLIENT_SECRET",
   "FRONTEND_URL",
-  "BASE_URL"
+  "BASE_URL",
 ];
 
-const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
+const missingVars = requiredEnvVars.filter((varName) => !process.env[varName]);
 if (missingVars.length > 0) {
-  console.error(`Missing required environment variables: ${missingVars.join(", ")}`);
-  process.exit(1); // Stop server if settings are missing
+  console.error(
+    `Missing required environment variables: ${missingVars.join(", ")}`
+  );
+  process.exit(1); // Exit if variables are missing
 }
 
 const app = express();
 const server = http.createServer(app);
 
-// Allow frontend to connect (CORS)
+// CORS configuration
 const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:3000",
-  "https://google-drive-frontend-2cxh.vercel.app"
+  "https://google-drive-frontend-2cxh.vercel.app",
 ];
 
 const corsOptions: cors.CorsOptions = {
   origin: (origin, callback) => {
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) {
+    console.log(`CORS check for origin: ${origin}`); // Debug CORS
+    if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
       console.log(`CORS blocked origin: ${origin}`);
@@ -55,54 +57,67 @@ const corsOptions: cors.CorsOptions = {
     "X-Requested-With",
     "Content-Type",
     "Accept",
-    "Authorization"
+    "Authorization",
   ],
-  optionsSuccessStatus: 200
+  optionsSuccessStatus: 200,
 };
 
+// Apply CORS middleware first
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
 
+// Parse JSON bodies
 app.use(express.json());
+
+// Initialize Passport
 app.use(passport.initialize());
 
-// Log requests for debugging
+// Debug middleware
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`, {
     origin: req.headers.origin,
-    authorization: req.headers.authorization ? "Bearer ***" : "None"
+    authorization: req.headers.authorization ? "Bearer ***" : "None",
   });
   next();
 });
 
 // Test endpoints
 app.get("/test", (req, res) => {
+  console.log("Handling /test request");
   res.json({ message: "Test successful" });
 });
 
 app.get("/ping", (req, res) => {
+  console.log("Handling /ping request");
   res.json({ message: "pong" });
 });
 
-// Routes for your app
+// Routes
 app.use("/auth", authRoutes);
 app.use("/files", fileRoutes);
 app.use("/folders", folderRoutes);
 app.use("/search", searchRoutes);
 
-// Handle errors
-app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  console.error("Global error:", err);
-  res.status(500).json({ error: "Internal server error" });
-});
+// Global error handler
+app.use(
+  (
+    err: any,
+    req: express.Request,
+    res: express.Response,
+    next: express.NextFunction
+  ) => {
+    console.error("Global error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+);
 
-// Real-time file updates
+// Socket.IO setup
 const io = new SocketIOServer(server, {
   cors: {
     origin: allowedOrigins,
     methods: ["GET", "POST"],
-    credentials: true
-  }
+    credentials: true,
+  },
 });
 
 io.on("connection", (socket) => {
@@ -132,7 +147,9 @@ io.on("connection", (socket) => {
       socket.emit("joined_file", { fileId });
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : "Unknown error";
-      socket.emit("error", { message: `Failed to join file channel: ${errorMessage}` });
+      socket.emit("error", {
+        message: `Failed to join file channel: ${errorMessage}`,
+      });
     }
   });
 
