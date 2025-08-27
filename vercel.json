@@ -1,26 +1,11 @@
 {
   "version": 2,
-  "builds": [
-    {
-      "src": "src/index.ts",
-      "use": "@vercel/node",
-      "config": {
-        "includeFiles": ["src/**"]
-      }
-    }
-  ],
-  "routes": [
-    {
-      "src": "/(.*)",
-      "dest": "/src/index.ts"
-    }
-  ],
-  "env": {
-    "NODE_ENV": "production"
-  },
+  "framework": null,
   "functions": {
     "src/index.ts": {
-      "maxDuration": 60
+      "memory": 1024,
+      "maxDuration": 30
     }
-  }
+  },
+  "outputDirectory": "dist"
 }
