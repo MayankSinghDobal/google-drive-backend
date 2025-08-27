@@ -11,7 +11,7 @@ import { supabase } from "./config/supabase";
 import cors from "cors";
 import path from "path";
 
-// Environment validation to prevent startup crashes
+// Check for missing settings to avoid crashes
 const requiredEnvVars = [
   "SUPABASE_URL",
   "SUPABASE_ANON_KEY",
@@ -25,13 +25,13 @@ const requiredEnvVars = [
 const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
 if (missingVars.length > 0) {
   console.error(`Missing required environment variables: ${missingVars.join(", ")}`);
-  process.exit(1); // Exit gracefully, logs error in Vercel
+  process.exit(1); // Stop server if settings are missing
 }
 
 const app = express();
 const server = http.createServer(app);
 
-// CORS configuration
+// Allow frontend to connect (CORS)
 const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:3000",
@@ -60,19 +60,13 @@ const corsOptions: cors.CorsOptions = {
   optionsSuccessStatus: 200
 };
 
-// Apply CORS middleware
 app.use(cors(corsOptions));
-
-// Handle preflight requests
 app.options("*", cors(corsOptions));
 
-// Parse JSON request bodies
 app.use(express.json());
-
-// Initialize Passport middleware
 app.use(passport.initialize());
 
-// Debug middleware for logging requests
+// Log requests for debugging
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`, {
     origin: req.headers.origin,
@@ -90,19 +84,19 @@ app.get("/ping", (req, res) => {
   res.json({ message: "pong" });
 });
 
-// Routes
+// Routes for your app
 app.use("/auth", authRoutes);
 app.use("/files", fileRoutes);
 app.use("/folders", folderRoutes);
 app.use("/search", searchRoutes);
 
-// Global error handler
+// Handle errors
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
   console.error("Global error:", err);
   res.status(500).json({ error: "Internal server error" });
 });
 
-// Socket.IO setup
+// Real-time file updates
 const io = new SocketIOServer(server, {
   cors: {
     origin: allowedOrigins,
