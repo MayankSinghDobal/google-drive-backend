@@ -1,12 +1,12 @@
 {
        "version": 2,
        "framework": null,
-       "functions": {
-         "src/index.ts": {
-           "memory": 1024,
-           "maxDuration": 30
+       "builds": [
+         {
+           "src": "src/index.ts",
+           "use": "@vercel/node"
          }
-       },
+       ],
        "routes": [
          {
            "src": "/(.*)",
