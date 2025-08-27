@@ -1,25 +1,23 @@
 {
-       "version": 2,
-       "framework": null,
-       "builds": [
-         {
+  "version": 2,
+  "framework": null,
+  "builds": [
+    {
       "src": "src/index.ts",
-      "use": "@vercel/node"
+      "use": "@vercel/node",
+      "config": {
+        "includeFiles": "src/**"
+      }
     }
-       ],
-       "routes": [
-         {
-           "src": "/(.*)",
-           "dest": "src/index.ts"       
-         }
-       ],
-       "outputDirectory": "dist",
-       "functions": {
-    "src/index.ts": {
-      "maxDuration": 30
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "src/index.ts"
     }
-  },
+  ],
+  "outputDirectory": "dist",
   "env": {
     "NODE_ENV": "production"
   }
-     }
+}
