@@ -3,17 +3,13 @@
   "version": "1.0.0",
   "description": "Backend for Google Drive Clone",
   "main": "dist/index.js",
-  "engines": {
-    "node": "18.x"
-  },
   "scripts": {
     "test": "jest",
     "start": "node dist/index.js",
     "build": "tsc",
     "dev": "ts-node src/index.ts",
     "dev:watch": "nodemon --exec ts-node src/index.ts",
-    "clean": "rimraf dist",
-    "vercel-build": "npm run build"
+    "clean": "rimraf dist"
   },
   "repository": {
     "type": "git",
@@ -37,8 +33,7 @@
     "supertest": "^6.3.4",
     "ts-jest": "^29.1.2",
     "ts-node": "^10.9.2",
-    "typescript": "^5.9.2",
-    "rimraf": "^3.0.2"
+    "typescript": "^5.9.2"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.56.0",
