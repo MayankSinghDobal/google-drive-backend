@@ -1,15 +1,16 @@
 import express from "express";
-import http from "http";
-import { Server as SocketIOServer } from "socket.io";
 import passport from "passport";
-import authRoutes from "./routes/auth";
-import fileRoutes from "./routes/files";
-import folderRoutes from "./routes/folders";
-import searchRoutes from "./routes/search";
-import "./config/passport";
-import { supabase } from "./config/supabase";
 import cors from "cors";
-import path from "path";
+import dotenv from "dotenv";
+
+// Load .env file for local development
+console.log("Attempting to load .env file...");
+const result = dotenv.config();
+if (result.error) {
+  console.error("Error loading .env file:", result.error);
+} else {
+  console.log("Successfully loaded .env file:", result.parsed);
+}
 
 // Check for missing environment variables
 const requiredEnvVars = [
@@ -18,38 +19,70 @@ const requiredEnvVars = [
   "JWT_SECRET",
   "GOOGLE_CLIENT_ID",
   "GOOGLE_CLIENT_SECRET",
-  "FRONTEND_URL",
-  "BASE_URL",
 ];
 
 const missingVars = requiredEnvVars.filter((varName) => !process.env[varName]);
 if (missingVars.length > 0) {
-  console.error(
-    `Missing required environment variables: ${missingVars.join(", ")}`
-  );
-  process.exit(1); // Exit if variables are missing
+  console.warn(`Missing required environment variables: ${missingVars.join(", ")}`);
+  console.warn("Continuing server startup with missing variables");
+} else {
+  console.log("All required environment variables are present");
+}
+
+// Import routes and configs with error handling
+let authRoutes, fileRoutes, folderRoutes, searchRoutes, supabase;
+try {
+  authRoutes = require("./routes/auth").default;
+  console.log("Successfully imported auth routes");
+} catch (err) {
+  console.error("Error importing auth routes:", err);
+}
+
+try {
+  fileRoutes = require("./routes/files").default;
+  console.log("Successfully imported file routes");
+} catch (err) {
+  console.error("Error importing file routes:", err);
+}
+
+try {
+  folderRoutes = require("./routes/folders").default;
+  console.log("Successfully imported folder routes");
+} catch (err) {
+  console.error("Error importing folder routes:", err);
+}
+
+try {
+  searchRoutes = require("./routes/search").default;
+  console.log("Successfully imported search routes");
+} catch (err) {
+  console.error("Error importing search routes:", err);
+}
+
+try {
+  require("./config/passport");
+  console.log("Successfully imported passport config");
+} catch (err) {
+  console.error("Error importing passport config:", err);
+}
+
+try {
+  supabase = require("./config/supabase").supabase;
+  console.log("Successfully imported supabase config");
+} catch (err) {
+  console.error("Error importing supabase config:", err);
 }
 
 const app = express();
-const server = http.createServer(app);
 
-// CORS configuration
-const allowedOrigins = [
-  "http://localhost:5173",
-  "http://localhost:3000",
-  "https://google-drive-frontend-2cxh.vercel.app",
-];
-
+// Simple CORS configuration
 const corsOptions: cors.CorsOptions = {
-  origin: (origin, callback) => {
-    console.log(`CORS check for origin: ${origin}`); // Debug CORS
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      console.log(`CORS blocked origin: ${origin}`);
-      callback(new Error(`Not allowed by CORS: ${origin}`));
-    }
-  },
+  origin: [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "https://google-drive-frontend-2cxh.vercel.app",
+    "https://google-drive-backend-ten.vercel.app",
+  ],
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: [
@@ -62,15 +95,19 @@ const corsOptions: cors.CorsOptions = {
   optionsSuccessStatus: 200,
 };
 
-// Apply CORS middleware first
+console.log("Setting up CORS middleware...");
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
 
-// Parse JSON bodies
+console.log("Setting up JSON parsing...");
 app.use(express.json());
 
-// Initialize Passport
-app.use(passport.initialize());
+console.log("Initializing Passport...");
+try {
+  app.use(passport.initialize());
+} catch (err) {
+  console.error("Error initializing Passport:", err);
+}
 
 // Debug middleware
 app.use((req, res, next) => {
@@ -81,110 +118,95 @@ app.use((req, res, next) => {
   next();
 });
 
-// Test endpoints
+// Health check endpoints
 app.get("/test", (req, res) => {
-  console.log("Handling /test request");
-  res.json({ message: "Test successful" });
+  res.json({
+    message: "Test successful",
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || "development",
+  });
 });
 
 app.get("/ping", (req, res) => {
-  console.log("Handling /ping request");
-  res.json({ message: "pong" });
+  res.json({
+    message: "pong",
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || "development",
+  });
 });
 
 // Routes
-app.use("/auth", authRoutes);
-app.use("/files", fileRoutes);
-app.use("/folders", folderRoutes);
-app.use("/search", searchRoutes);
+console.log("Registering routes...");
+try {
+  if (authRoutes) app.use("/auth", authRoutes);
+  if (fileRoutes) app.use("/files", fileRoutes);
+  if (folderRoutes) app.use("/folders", folderRoutes);
+  if (searchRoutes) app.use("/search", searchRoutes);
+  console.log("Routes registered successfully");
+} catch (err) {
+  console.error("Error registering routes:", err);
+}
+
+// 404 handler
+app.use("*", (req, res) => {
+  res.status(404).json({
+    error: "Route not found",
+    path: req.originalUrl,
+    method: req.method,
+  });
+});
 
 // Global error handler
 app.use(
   (
-    err: any,
+    err: Error,
     req: express.Request,
     res: express.Response,
     next: express.NextFunction
   ) => {
     console.error("Global error:", err);
-    res.status(500).json({ error: "Internal server error" });
+    const response: { error: string; details?: string } = {
+      error: "Internal server error",
+    };
+    if (!process.env.NODE_ENV || process.env.NODE_ENV !== "production") {
+      response.details = err.message;
+    }
+    res.status(500).json(response);
   }
 );
 
-// Socket.IO setup
-const io = new SocketIOServer(server, {
-  cors: {
-    origin: allowedOrigins,
-    methods: ["GET", "POST"],
-    credentials: true,
-  },
-});
+// Wrap entire startup in try/catch
+try {
+  // For Vercel, export the app directly
+  module.exports = app;
 
-io.on("connection", (socket) => {
-  console.log("WebSocket client connected:", socket.id);
-
-  socket.on("join_file", async (fileId: string) => {
-    try {
-      if (!fileId || isNaN(parseInt(fileId))) {
-        socket.emit("error", { message: "Invalid file ID" });
-        return;
-      }
-
-      const { data: file, error } = await supabase
-        .from("files")
-        .select("id")
-        .eq("id", fileId)
-        .is("deleted_at", null)
-        .single();
-
-      if (error || !file) {
-        socket.emit("error", { message: "File not found or deleted" });
-        return;
-      }
-
-      socket.join(`file:${fileId}`);
-      console.log(`Client ${socket.id} joined file:${fileId}`);
-      socket.emit("joined_file", { fileId });
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : "Unknown error";
-      socket.emit("error", {
-        message: `Failed to join file channel: ${errorMessage}`,
-      });
-    }
+  // For local development, start the server
+  const PORT = process.env.PORT || 3000;
+  console.log(`Starting server on port ${PORT}...`);
+  const server = app.listen(PORT, () => {
+    console.log("=".repeat(60));
+    console.log(`Server running on port ${PORT}`);
+    console.log(`Started at: ${new Date().toISOString()}`);
+    console.log(`Environment: ${process.env.NODE_ENV || "development"}`);
+    console.log(`Health check: http://localhost:${PORT}/ping`);
+    console.log(`Test CORS: http://localhost:${PORT}/test`);
+    console.log("=".repeat(60));
   });
 
-  socket.on("disconnect", () => {
-    console.log("WebSocket client disconnected:", socket.id);
+  server.on("error", (err) => {
+    console.error("Server startup error:", err);
+    process.exit(1);
   });
-});
 
-export { io };
-
-const PORT = process.env.PORT || 3000;
-
-server.listen(PORT, () => {
-  console.log("=".repeat(60));
-  console.log(`Server running on port ${PORT}`);
-  console.log(`Started at: ${new Date().toISOString()}`);
-  console.log(`Environment: ${process.env.NODE_ENV || "development"}`);
-  console.log(`Allowed origins: ${allowedOrigins.join(", ")}`);
-  console.log(`Health check: http://localhost:${PORT}/ping`);
-  console.log(`Test CORS: http://localhost:${PORT}/test`);
-  console.log("=".repeat(60));
-});
-
-process.on("SIGTERM", () => {
-  console.log("SIGTERM received, shutting down gracefully...");
-  server.close(() => {
-    console.log("Server shut down.");
-    process.exit(0);
+  process.on("SIGTERM", () => {
+    console.log("SIGTERM received, shutting down gracefully...");
+    server.close(() => process.exit(0));
   });
-});
 
-process.on("SIGINT", () => {
-  console.log("SIGINT received, shutting down gracefully...");
-  server.close(() => {
-    console.log("Server shut down.");
-    process.exit(0);
+  process.on("SIGINT", () => {
+    console.log("SIGINT received, shutting down gracefully...");
+    server.close(() => process.exit(0));
   });
-});
+} catch (err) {
+  console.error("Startup error:", err);
+}
