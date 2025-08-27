@@ -7,19 +7,18 @@ import { authenticateJWT } from "../middleware/auth";
 import { OAuth2Client } from "google-auth-library";
 
 const router: Router = express.Router();
-
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
-// Debug middleware for all auth routes
+// Debug middleware
 router.use((req, res, next) => {
   console.log(`[AUTH] ${req.method} ${req.path}`, {
     origin: req.headers.origin,
-    userAgent: req.headers['user-agent']?.substring(0, 50) + '...',
+    contentType: req.headers['content-type'],
   });
   next();
 });
 
-// /me endpoint
+// /me endpoint - FIX: Match frontend expectation
 router.get("/me", authenticateJWT, async (req: Request, res: Response) => {
   try {
     const user = req.user as { userId: number; email: string };
@@ -35,6 +34,7 @@ router.get("/me", authenticateJWT, async (req: Request, res: Response) => {
       return res.status(404).json({ error: "User not found" });
     }
 
+    // FIX: Return user directly, not wrapped in user object
     res.status(200).json({ user: data });
   } catch (error: unknown) {
     console.error("Fetch user error:", error);
@@ -49,35 +49,43 @@ router.post("/signup", async (req: Request, res: Response) => {
   if (!email || !password) {
     return res.status(400).json({ error: "Email and password are required" });
   }
+  
   try {
     const { data: existingUser, error: userError } = await supabase
       .from("users")
       .select("id")
       .eq("email", email)
       .single();
+      
     if (userError && userError.code !== "PGRST116") {
       console.error("Check user error:", userError);
       throw userError;
     }
+    
     if (existingUser) {
       return res.status(409).json({ error: "Email already exists" });
     }
+    
     const saltRounds = 10;
     const hashedPassword = await bcrypt.hash(password, saltRounds);
+    
     const { data, error } = await supabase
       .from("users")
       .insert([{ email, password: hashedPassword, name }])
       .select("id, email, name")
       .single();
+      
     if (error) {
       console.error("Insert user error:", error);
       throw error;
     }
+    
     const token = jwt.sign(
       { userId: data.id, email: data.email },
       process.env.JWT_SECRET as string,
       { expiresIn: "24h" }
     );
+    
     res.status(201).json({
       message: "Signup successful",
       token,
@@ -96,26 +104,31 @@ router.post("/login", async (req: Request, res: Response) => {
   if (!email || !password) {
     return res.status(400).json({ error: "Email and password are required" });
   }
+  
   try {
     const { data: user, error: userError } = await supabase
       .from("users")
       .select("id, email, name, password")
       .eq("email", email)
       .single();
+      
     if (userError || !user) {
       console.error("User not found:", email);
       return res.status(401).json({ error: "Invalid credentials" });
     }
+    
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
       console.error("Invalid password for:", email);
       return res.status(401).json({ error: "Invalid credentials" });
     }
+    
     const token = jwt.sign(
       { userId: user.id, email: user.email },
       process.env.JWT_SECRET as string,
       { expiresIn: "24h" }
     );
+    
     res.status(200).json({
       message: "Login successful",
       token,
@@ -134,45 +147,59 @@ router.post("/google", async (req: Request, res: Response) => {
   if (!token) {
     return res.status(400).json({ error: "Google token is required" });
   }
+  
   try {
+    console.log("Verifying Google token...");
     const ticket = await googleClient.verifyIdToken({
       idToken: token,
       audience: process.env.GOOGLE_CLIENT_ID,
     });
+    
     const payload = ticket.getPayload();
     if (!payload || !payload.email) {
       console.error("Invalid Google token payload");
       return res.status(401).json({ error: "Invalid Google token" });
     }
+    
+    console.log("Google token verified for:", payload.email);
+    
     let user;
     const { data: existingUser, error: userError } = await supabase
       .from("users")
       .select("id, email, name")
       .eq("email", payload.email)
       .single();
+      
     if (userError && userError.code !== "PGRST116") {
       console.error("Fetch user error:", userError);
       throw userError;
     }
+    
     if (existingUser) {
       user = existingUser;
+      console.log("Found existing user:", user.email);
     } else {
+      console.log("Creating new user for:", payload.email);
       const { data: newUser, error } = await supabase
         .from("users")
-        .insert([{ email: payload.email, name: payload.name }])
+        .insert([{ email: payload.email, name: payload.name || payload.email }])
         .select("id, email, name")
         .single();
+        
       if (error) {
         console.error("Insert user error:", error);
         throw error;
       }
       user = newUser;
+      console.log("Created new user:", user.email);
     }
+    
     const jwtToken = jwt.sign(
       { userId: user.id, email: user.email },
       process.env.JWT_SECRET as string,
       { expiresIn: "24h" }
     );
+    
     res.status(200).json({
       message: "Google login successful",
       token: jwtToken,
@@ -190,7 +217,7 @@ router.post("/logout", (req: Request, res: Response) => {
   res.status(200).json({ message: "Logout successful. Please discard your token." });
 });
 
-// Server-side Google OAuth routes - FIXED ROUTE NAMES
+// Server-side Google OAuth routes
 router.get(
   "/google/oauth",
   passport.authenticate("google", { scope: ["profile", "email"] })

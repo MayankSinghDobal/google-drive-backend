@@ -6,7 +6,7 @@ import authRoutes from "./routes/auth";
 import fileRoutes from "./routes/files";
 import folderRoutes from "./routes/folders";
 import searchRoutes from "./routes/search";
-import "./config/passport"; // Initialize Passport
+import "./config/passport";
 import { supabase } from "./config/supabase";
 import cors from "cors";
 import path from "path";
@@ -16,25 +16,12 @@ const server = http.createServer(app);
 
 // Enhanced CORS configuration
 const corsOptions = {
-  origin: function (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) {
-    // Allow requests with no origin (mobile apps, curl requests, Postman)
-    if (!origin) return callback(null, true);
-
-    const allowedOrigins = [
-      'http://localhost:5173',
-      'http://localhost:3000',
-      'https://google-drive-frontend-2cxh.vercel.app',
-      'https://google-drive-backend-ten.vercel.app'
-    ];
-
-    if (allowedOrigins.includes(origin)) {
-      console.log('CORS allowed origin:', origin);
-      callback(null, true);
-    } else {
-      console.log('CORS blocked origin:', origin);
-      callback(null, false); // Don't throw error, just deny
-    }
-  },
+  origin: [
+    'http://localhost:5173',
+    'http://localhost:3000',
+    'https://google-drive-frontend-2cxh.vercel.app',
+    'https://google-drive-backend-ten.vercel.app'
+  ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: [
@@ -45,18 +32,24 @@ const corsOptions = {
     'Authorization',
     'Access-Control-Allow-Credentials'
   ],
-  optionsSuccessStatus: 200 // For legacy browser support
+  optionsSuccessStatus: 200
 };
 
 // Apply CORS middleware first
 app.use(cors(corsOptions));
 
-// Handle preflight requests explicitly - FIXED: Added parameter name to wildcard
-app.options('/*path', cors(corsOptions));
+// Handle preflight requests explicitly
+app.options('*', cors(corsOptions));
 
 // Add explicit CORS headers for all responses
 app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin && corsOptions.origin.includes(origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
+  }
   res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
   next();
 });
 
@@ -66,16 +59,16 @@ app.use(express.json());
 // Initialize passport middleware
 app.use(passport.initialize());
 
-// Debug middleware to log all requests
+// Debug middleware
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`, {
     origin: req.headers.origin,
-    userAgent: req.headers['user-agent']?.substring(0, 50) + '...',
+    authorization: req.headers.authorization ? 'Bearer ***' : 'None',
   });
   next();
 });
 
-// Test endpoint to verify CORS is working
+// Test endpoints
 app.get("/test", (req, res) => {
   res.status(200).json({
     message: "Backend is working!",
@@ -85,7 +78,6 @@ app.get("/test", (req, res) => {
   });
 });
 
-// Simple health check endpoint
 app.get("/ping", (req, res) => {
   res.status(200).json({ 
     status: "ok", 
@@ -93,43 +85,36 @@ app.get("/ping", (req, res) => {
   });
 });
 
-// Mount API routes with explicit paths
+// Mount API routes
 app.use("/auth", authRoutes);
 app.use("/files", fileRoutes);
 app.use("/folders", folderRoutes);
 app.use("/search", searchRoutes);
 
-// Serve static files from the 'public' directory (if it exists)
+// Production static file serving
 if (process.env.NODE_ENV === 'production') {
   app.use(express.static(path.join(__dirname, 'public')));
   
-  // Fixed fallback for SPA routing in production - Express 5 compatible
-  app.get('/*path', (req, res) => {
-    // Only serve index.html for non-API routes
-    if (!req.path.startsWith('/api') && !req.path.startsWith('/auth') && 
-        !req.path.startsWith('/files') && !req.path.startsWith('/folders') && 
-        !req.path.startsWith('/search')) {
-      res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/auth') || req.path.startsWith('/files') || 
+        req.path.startsWith('/folders') || req.path.startsWith('/search') ||
+        req.path.startsWith('/ping') || req.path.startsWith('/test')) {
+      next();
     } else {
-      res.status(404).json({ 
-        error: 'Route not found',
-        path: req.path,
-        method: req.method
-      });
+      res.sendFile(path.join(__dirname, 'public', 'index.html'));
     }
   });
 }
 
-// 404 handler for development
-if (process.env.NODE_ENV !== 'production') {
-  app.use((req, res) => {
-    res.status(404).json({ 
-      error: 'Route not found',
-      path: req.path,
-      method: req.method
-    });
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({ 
+    error: 'Route not found',
+    path: req.path,
+    method: req.method,
+    availableRoutes: ['/auth', '/files', '/folders', '/search', '/ping', '/test']
   });
-}
+});
 
 // Global error handler
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -140,33 +125,21 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
   });
 });
 
-// Socket.io setup for real-time communication
+// Socket.io setup
 const io = new SocketIOServer(server, {
-  cors: {
-    origin: [
-      'http://localhost:5173',
-      'http://localhost:3000',
-      'https://google-drive-frontend-2cxh.vercel.app',
-      'https://google-drive-backend-ten.vercel.app'
-    ],
-    methods: ['GET', 'POST'],
-    credentials: true
-  },
+  cors: corsOptions
 });
 
 io.on("connection", (socket) => {
   console.log("WebSocket client connected:", socket.id);
   
-  // Handle client joining a file's channel
   socket.on('join_file', async (fileId: string) => {
     try {
-      // Validate fileId
       if (!fileId || isNaN(parseInt(fileId))) {
         socket.emit('error', { message: 'Invalid file ID' });
         return;
       }
 
-      // Verify file exists and is not deleted
       const { data: file, error } = await supabase
         .from('files')
         .select('id')
@@ -179,7 +152,6 @@ io.on("connection", (socket) => {
         return;
       }
 
-      // Join the file's room
       socket.join(`file:${fileId}`);
       console.log(`Client ${socket.id} joined file:${fileId}`);
       socket.emit('joined_file', { fileId });
@@ -194,12 +166,10 @@ io.on("connection", (socket) => {
   });
 });
 
-// Export io for use in routes
 export { io };
 
 const PORT = process.env.PORT || 3000;
 
-// Enhanced server startup
 server.listen(PORT, () => {
   console.log('='.repeat(60));
   console.log(`Server running on port ${PORT}`);
@@ -208,22 +178,8 @@ server.listen(PORT, () => {
   console.log(`Health check: http://localhost:${PORT}/ping`);
   console.log(`Test CORS: http://localhost:${PORT}/test`);
   console.log('='.repeat(60));
-  
-  // Test database connection on startup (only in development)
-  if (process.env.NODE_ENV !== 'production') {
-    setTimeout(async () => {
-      try {
-        const { testSupabaseConnection } = await import('./config/supabase');
-        const connected = await testSupabaseConnection();
-        console.log(`Database connection: ${connected ? 'Connected' : 'Failed'}`);
-      } catch (err) {
-        console.error('Database connection test failed:', err);
-      }
-    }, 1000);
-  }
 });
 
-// Graceful shutdown
 process.on('SIGTERM', () => {
   console.log('SIGTERM received, shutting down gracefully...');
   server.close(() => {
