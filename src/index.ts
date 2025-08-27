@@ -1,4 +1,4 @@
-import express from "express"; 
+import express from "express";
 import http from "http";
 import { Server as SocketIOServer } from "socket.io";
 import passport from "passport";
@@ -11,21 +11,36 @@ import { supabase } from "./config/supabase";
 import cors from "cors";
 import path from "path";
 
+// Environment validation to prevent startup crashes
+const requiredEnvVars = [
+  "SUPABASE_URL",
+  "SUPABASE_ANON_KEY",
+  "JWT_SECRET",
+  "GOOGLE_CLIENT_ID",
+  "GOOGLE_CLIENT_SECRET",
+  "FRONTEND_URL",
+  "BASE_URL"
+];
+
+const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
+if (missingVars.length > 0) {
+  console.error(`Missing required environment variables: ${missingVars.join(", ")}`);
+  process.exit(1); // Exit gracefully, logs error in Vercel
+}
+
 const app = express();
 const server = http.createServer(app);
 
-// âœ… Fixed CORS configuration
+// CORS configuration
 const allowedOrigins = [
   "http://localhost:5173",
-  "http://localhost:3000", 
-  "https://google-drive-frontend-2cxh.vercel.app",
+  "http://localhost:3000",
+  "https://google-drive-frontend-2cxh.vercel.app"
 ];
 
 const corsOptions: cors.CorsOptions = {
   origin: (origin, callback) => {
-    // Allow requests with no origin (like mobile apps, Postman, etc.)
     if (!origin) return callback(null, true);
-    
     if (allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
@@ -37,104 +52,63 @@ const corsOptions: cors.CorsOptions = {
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: [
     "Origin",
-    "X-Requested-With", 
+    "X-Requested-With",
     "Content-Type",
     "Accept",
-    "Authorization",
+    "Authorization"
   ],
-  optionsSuccessStatus: 200,
+  optionsSuccessStatus: 200
 };
 
-// âœ… Apply CORS middleware
+// Apply CORS middleware
 app.use(cors(corsOptions));
 
-// âœ… Handle preflight requests explicitly
+// Handle preflight requests
 app.options("*", cors(corsOptions));
 
-// Use express.json() for parsing JSON request bodies
+// Parse JSON request bodies
 app.use(express.json());
 
-// Initialize passport middleware
+// Initialize Passport middleware
 app.use(passport.initialize());
 
-// Debug middleware
+// Debug middleware for logging requests
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`, {
     origin: req.headers.origin,
-    authorization: req.headers.authorization ? "Bearer ***" : "None",
+    authorization: req.headers.authorization ? "Bearer ***" : "None"
   });
   next();
 });
 
-// âœ… Fixed test endpoints - Remove manual CORS headers since middleware handles it
+// Test endpoints
 app.get("/test", (req, res) => {
-  res.status(200).json({
-    message: "Backend is working!",
-    timestamp: new Date().toISOString(),
-    origin: req.headers.origin,
-    cors: "enabled"
-  });
+  res.json({ message: "Test successful" });
 });
 
 app.get("/ping", (req, res) => {
-  res.status(200).json({ 
-    status: "ok", 
-    timestamp: new Date().toISOString(),
-    origin: req.headers.origin
-  });
+  res.json({ message: "pong" });
 });
 
-// Mount API routes
+// Routes
 app.use("/auth", authRoutes);
 app.use("/files", fileRoutes);
 app.use("/folders", folderRoutes);
 app.use("/search", searchRoutes);
 
-// Production static file serving
-if (process.env.NODE_ENV === "production") {
-  app.use(express.static(path.join(__dirname, "public")));
-
-  app.get("*", (req, res, next) => {
-    if (
-      req.path.startsWith("/auth") ||
-      req.path.startsWith("/files") ||
-      req.path.startsWith("/folders") ||
-      req.path.startsWith("/search") ||
-      req.path.startsWith("/ping") ||
-      req.path.startsWith("/test")
-    ) {
-      next();
-    } else {
-      res.sendFile(path.join(__dirname, "public", "index.html"));
-    }
-  });
-}
-
-// 404 handler
-app.use((req, res) => {
-  res.status(404).json({
-    error: "Route not found",
-    path: req.path,
-    method: req.method,
-    availableRoutes: ["/auth", "/files", "/folders", "/search", "/ping", "/test"],
-  });
-});
-
 // Global error handler
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  console.error("Global error handler:", err);
-  res.status(500).json({
-    error: "Internal server error",
-    message: process.env.NODE_ENV === "development" ? err.message : "Something went wrong",
-  });
+  console.error("Global error:", err);
+  res.status(500).json({ error: "Internal server error" });
 });
 
-// Socket.io setup
+// Socket.IO setup
 const io = new SocketIOServer(server, {
   cors: {
     origin: allowedOrigins,
-    credentials: true,
-  },
+    methods: ["GET", "POST"],
+    credentials: true
+  }
 });
 
 io.on("connection", (socket) => {
