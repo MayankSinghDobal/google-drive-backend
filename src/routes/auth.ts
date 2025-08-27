@@ -2,7 +2,6 @@ import express, { Router, Request, Response } from "express";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import { supabase } from "../config/supabase";
-import passport from "../config/passport";
 import { authenticateJWT } from "../middleware/auth";
 import { OAuth2Client } from "google-auth-library";
 
@@ -16,6 +15,15 @@ router.use((req, res, next) => {
     contentType: req.headers['content-type'],
   });
   next();
+});
+
+// Health check for auth routes
+router.get("/health", (req, res) => {
+  res.status(200).json({
+    status: "ok",
+    service: "auth",
+    timestamp: new Date().toISOString(),
+  });
 });
 
 // /me endpoint - FIX: Match frontend expectation
@@ -34,7 +42,6 @@ router.get("/me", authenticateJWT, async (req: Request, res: Response) => {
       return res.status(404).json({ error: "User not found" });
     }
 
-    // FIX: Return user directly, not wrapped in user object
     res.status(200).json({ user: data });
   } catch (error: unknown) {
     console.error("Fetch user error:", error);
@@ -216,33 +223,6 @@ router.post("/google", async (req: Request, res: Response) => {
 router.post("/logout", (req: Request, res: Response) => {
   res.status(200).json({ message: "Logout successful. Please discard your token." });
 });
-
-// Server-side Google OAuth routes
-router.get(
-  "/google/oauth",
-  passport.authenticate("google", { scope: ["profile", "email"] })
-);
-
-router.get(
-  "/google/callback",
-  passport.authenticate("google", { session: false }),
-  (req: Request, res: Response) => {
-    const user = req.user as { id: number; email: string; name: string };
-    const token = jwt.sign(
-      { userId: user.id, email: user.email },
-      process.env.JWT_SECRET as string,
-      { expiresIn: "24h" }
-    );
-    const frontendUrl = process.env.NODE_ENV === 'production'
-      ? 'https://google-drive-frontend-2cxh.vercel.app'
-      : 'http://localhost:5173';
-    res.redirect(
-      `${frontendUrl}/auth/callback?token=${token}&user=${encodeURIComponent(
-        JSON.stringify(user)
-      )}`
-    );
-  }
-);
 
 // Protected route
 router.get("/protected", authenticateJWT, (req: Request, res: Response) => {

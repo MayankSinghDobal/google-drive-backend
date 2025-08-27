@@ -1,5 +1,4 @@
 import express from "express"; 
-import http from "http";
 import { Server as SocketIOServer } from "socket.io";
 import passport from "passport";
 import authRoutes from "./routes/auth";
@@ -9,12 +8,10 @@ import searchRoutes from "./routes/search";
 import "./config/passport";
 import { supabase } from "./config/supabase";
 import cors from "cors";
-import path from "path";
 
 const app = express();
-const server = http.createServer(app);
 
-// ✅ Fixed CORS configuration
+// Fixed CORS configuration for Vercel
 const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:3000", 
@@ -45,14 +42,15 @@ const corsOptions: cors.CorsOptions = {
   optionsSuccessStatus: 200,
 };
 
-// ✅ Apply CORS middleware
+// Apply CORS middleware
 app.use(cors(corsOptions));
 
-// ✅ Handle preflight requests explicitly
+// Handle preflight requests explicitly
 app.options("*", cors(corsOptions));
 
 // Use express.json() for parsing JSON request bodies
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Initialize passport middleware
 app.use(passport.initialize());
@@ -66,13 +64,23 @@ app.use((req, res, next) => {
   next();
 });
 
-// ✅ Fixed test endpoints - Remove manual CORS headers since middleware handles it
+// Health check endpoints
+app.get("/", (req, res) => {
+  res.status(200).json({
+    message: "Google Drive Backend API",
+    status: "healthy",
+    timestamp: new Date().toISOString(),
+    version: "1.0.0"
+  });
+});
+
 app.get("/test", (req, res) => {
   res.status(200).json({
     message: "Backend is working!",
     timestamp: new Date().toISOString(),
     origin: req.headers.origin,
-    cors: "enabled"
+    cors: "enabled",
+    environment: process.env.NODE_ENV || "development"
   });
 });
 
@@ -80,8 +88,37 @@ app.get("/ping", (req, res) => {
   res.status(200).json({ 
     status: "ok", 
     timestamp: new Date().toISOString(),
-    origin: req.headers.origin
+    origin: req.headers.origin,
+    server: "vercel"
   });
+});
+
+// Test Supabase connection
+app.get("/health", async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('users')
+      .select('count', { count: 'exact' })
+      .limit(1);
+    
+    if (error) {
+      throw error;
+    }
+    
+    res.status(200).json({
+      status: "healthy",
+      database: "connected",
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error: any) {
+    console.error("Health check failed:", error);
+    res.status(503).json({
+      status: "unhealthy",
+      database: "disconnected",
+      error: error.message,
+      timestamp: new Date().toISOString(),
+    });
+  }
 });
 
 // Mount API routes
@@ -90,33 +127,13 @@ app.use("/files", fileRoutes);
 app.use("/folders", folderRoutes);
 app.use("/search", searchRoutes);
 
-// Production static file serving
-if (process.env.NODE_ENV === "production") {
-  app.use(express.static(path.join(__dirname, "public")));
-
-  app.get("*", (req, res, next) => {
-    if (
-      req.path.startsWith("/auth") ||
-      req.path.startsWith("/files") ||
-      req.path.startsWith("/folders") ||
-      req.path.startsWith("/search") ||
-      req.path.startsWith("/ping") ||
-      req.path.startsWith("/test")
-    ) {
-      next();
-    } else {
-      res.sendFile(path.join(__dirname, "public", "index.html"));
-    }
-  });
-}
-
 // 404 handler
 app.use((req, res) => {
   res.status(404).json({
     error: "Route not found",
     path: req.path,
     method: req.method,
-    availableRoutes: ["/auth", "/files", "/folders", "/search", "/ping", "/test"],
+    availableRoutes: ["/auth", "/files", "/folders", "/search", "/ping", "/test", "/health"],
   });
 });
 
@@ -126,80 +143,35 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
   res.status(500).json({
     error: "Internal server error",
     message: process.env.NODE_ENV === "development" ? err.message : "Something went wrong",
+    timestamp: new Date().toISOString(),
   });
 });
 
-// Socket.io setup
-const io = new SocketIOServer(server, {
-  cors: {
-    origin: allowedOrigins,
-    credentials: true,
-  },
-});
+// For Vercel serverless functions, we need to export the app
+export default app;
 
-io.on("connection", (socket) => {
-  console.log("WebSocket client connected:", socket.id);
+// For local development
+if (process.env.NODE_ENV !== 'production') {
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, () => {
+    console.log("=".repeat(60));
+    console.log(`Server running on port ${PORT}`);
+    console.log(`Started at: ${new Date().toISOString()}`);
+    console.log(`Environment: ${process.env.NODE_ENV || "development"}`);
+    console.log(`Allowed origins: ${allowedOrigins.join(", ")}`);
+    console.log(`Health check: http://localhost:${PORT}/ping`);
+    console.log(`Test CORS: http://localhost:${PORT}/test`);
+    console.log("=".repeat(60));
+  });
+}
 
-  socket.on("join_file", async (fileId: string) => {
-    try {
-      if (!fileId || isNaN(parseInt(fileId))) {
-        socket.emit("error", { message: "Invalid file ID" });
-        return;
-      }
-
-      const { data: file, error } = await supabase
-        .from("files")
-        .select("id")
-        .eq("id", fileId)
-        .is("deleted_at", null)
-        .single();
-
-      if (error || !file) {
-        socket.emit("error", { message: "File not found or deleted" });
-        return;
-      }
-
-      socket.join(`file:${fileId}`);
-      console.log(`Client ${socket.id} joined file:${fileId}`);
-      socket.emit("joined_file", { fileId });
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : "Unknown error";
-      socket.emit("error", { message: `Failed to join file channel: ${errorMessage}` });
+// Export io for file routes (simplified for serverless)
+export const io = {
+  to: (room: string) => ({
+    emit: (event: string, data: any) => {
+      console.log(`Socket emit to ${room}:`, event, data);
+      // In serverless, we can't maintain WebSocket connections
+      // Consider using Supabase Realtime or another service
     }
-  });
-
-  socket.on("disconnect", () => {
-    console.log("WebSocket client disconnected:", socket.id);
-  });
-});
-
-export { io };
-
-const PORT = process.env.PORT || 3000;
-
-server.listen(PORT, () => {
-  console.log("=".repeat(60));
-  console.log(`Server running on port ${PORT}`);
-  console.log(`Started at: ${new Date().toISOString()}`);
-  console.log(`Environment: ${process.env.NODE_ENV || "development"}`);
-  console.log(`Allowed origins: ${allowedOrigins.join(", ")}`);
-  console.log(`Health check: http://localhost:${PORT}/ping`);
-  console.log(`Test CORS: http://localhost:${PORT}/test`);
-  console.log("=".repeat(60));
-});
-
-process.on("SIGTERM", () => {
-  console.log("SIGTERM received, shutting down gracefully...");
-  server.close(() => {
-    console.log("Server shut down.");
-    process.exit(0);
-  });
-});
-
-process.on("SIGINT", () => {
-  console.log("SIGINT received, shutting down gracefully...");
-  server.close(() => {
-    console.log("Server shut down.");
-    process.exit(0);
-  });
-});
+  })
+};
