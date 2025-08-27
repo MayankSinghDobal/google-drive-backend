@@ -14,26 +14,30 @@ import path from "path";
 const app = express();
 const server = http.createServer(app);
 
-// ✅ Centralized CORS configuration
+// ✅ Fixed CORS configuration
 const allowedOrigins = [
   "http://localhost:5173",
-  "http://localhost:3000",
+  "http://localhost:3000", 
   "https://google-drive-frontend-2cxh.vercel.app",
 ];
 
 const corsOptions: cors.CorsOptions = {
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) {
+    // Allow requests with no origin (like mobile apps, Postman, etc.)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
-      callback(new Error("Not allowed by CORS"));
+      console.log(`CORS blocked origin: ${origin}`);
+      callback(new Error(`Not allowed by CORS: ${origin}`));
     }
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: [
     "Origin",
-    "X-Requested-With",
+    "X-Requested-With", 
     "Content-Type",
     "Accept",
     "Authorization",
@@ -43,7 +47,8 @@ const corsOptions: cors.CorsOptions = {
 
 // ✅ Apply CORS middleware
 app.use(cors(corsOptions));
-// ✅ Preflight requests
+
+// ✅ Handle preflight requests explicitly
 app.options("*", cors(corsOptions));
 
 // Use express.json() for parsing JSON request bodies
@@ -61,21 +66,8 @@ app.use((req, res, next) => {
   next();
 });
 
-// Test endpoints
-// Test endpoints
+// ✅ Fixed test endpoints - Remove manual CORS headers since middleware handles it
 app.get("/test", (req, res) => {
-  const origin = req.headers.origin;
-  const allowedOrigins = [
-    "http://localhost:5173",
-    "http://localhost:3000",
-    "https://google-drive-frontend-2cxh.vercel.app"
-  ];
-
-  if (origin && allowedOrigins.includes(origin)) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
-    res.setHeader("Access-Control-Allow-Credentials", "true");
-  }
-
   res.status(200).json({
     message: "Backend is working!",
     timestamp: new Date().toISOString(),
@@ -85,24 +77,12 @@ app.get("/test", (req, res) => {
 });
 
 app.get("/ping", (req, res) => {
-  const origin = req.headers.origin;
-  const allowedOrigins = [
-    "http://localhost:5173",
-    "http://localhost:3000",
-    "https://google-drive-frontend-2cxh.vercel.app"
-  ];
-
-  if (origin && allowedOrigins.includes(origin)) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
-    res.setHeader("Access-Control-Allow-Credentials", "true");
-  }
-
   res.status(200).json({ 
     status: "ok", 
-    timestamp: new Date().toISOString() 
+    timestamp: new Date().toISOString(),
+    origin: req.headers.origin
   });
 });
-
 
 // Mount API routes
 app.use("/auth", authRoutes);
@@ -202,6 +182,7 @@ server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Started at: ${new Date().toISOString()}`);
   console.log(`Environment: ${process.env.NODE_ENV || "development"}`);
+  console.log(`Allowed origins: ${allowedOrigins.join(", ")}`);
   console.log(`Health check: http://localhost:${PORT}/ping`);
   console.log(`Test CORS: http://localhost:${PORT}/test`);
   console.log("=".repeat(60));
