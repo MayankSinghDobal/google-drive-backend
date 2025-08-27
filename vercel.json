@@ -20,7 +20,7 @@
   },
   "functions": {
     "src/index.ts": {
-      "maxDuration": 60
+      "maxDuration": 30
     }
   }
 }
