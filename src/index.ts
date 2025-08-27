@@ -62,21 +62,47 @@ app.use((req, res, next) => {
 });
 
 // Test endpoints
+// Test endpoints
 app.get("/test", (req, res) => {
+  const origin = req.headers.origin;
+  const allowedOrigins = [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "https://google-drive-frontend-2cxh.vercel.app"
+  ];
+
+  if (origin && allowedOrigins.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+  }
+
   res.status(200).json({
     message: "Backend is working!",
     timestamp: new Date().toISOString(),
     origin: req.headers.origin,
-    cors: "enabled",
+    cors: "enabled"
   });
 });
 
 app.get("/ping", (req, res) => {
-  res.status(200).json({
-    status: "ok",
-    timestamp: new Date().toISOString(),
+  const origin = req.headers.origin;
+  const allowedOrigins = [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "https://google-drive-frontend-2cxh.vercel.app"
+  ];
+
+  if (origin && allowedOrigins.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+  }
+
+  res.status(200).json({ 
+    status: "ok", 
+    timestamp: new Date().toISOString() 
   });
 });
+
 
 // Mount API routes
 app.use("/auth", authRoutes);
