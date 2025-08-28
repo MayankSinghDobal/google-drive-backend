@@ -58,8 +58,8 @@ router.post(
     const user = req.user as { userId: number; email: string };
     const file = req.file;
     const fileName = `${user.userId}/${Date.now()}_${file.originalname}`;
-    const filePath = `drive-files/${fileName}`;
-    const versionPath = `drive-files/versions/${user.userId}/${Date.now()}_${
+    const filePath = `drive_files/${fileName}`;
+    const versionPath = `drive_files/versions/${user.userId}/${Date.now()}_${
       file.originalname
     }`;
 
@@ -84,7 +84,7 @@ router.post(
 
       // Upload file to Supabase Storage (main file)
       const { error: storageError } = await supabase.storage
-        .from("drive-files")
+        .from("drive_files")
         .upload(fileName, file.buffer, {
           contentType: file.mimetype,
         });
@@ -97,14 +97,14 @@ router.post(
 
       // Upload file to Supabase Storage (version)
       const { error: versionStorageError } = await supabase.storage
-        .from("drive-files")
+        .from("drive_files")
         .upload(versionPath, file.buffer, {
           contentType: file.mimetype,
         });
 
       if (versionStorageError) {
         // Rollback: delete main file and metadata
-        await supabase.storage.from("drive-files").remove([fileName]);
+        await supabase.storage.from("drive_files").remove([fileName]);
         await supabase.from("files").delete().eq("id", fileData.id);
         throw versionStorageError;
       }
@@ -122,7 +122,7 @@ router.post(
       if (permissionError) {
         // Rollback: delete files and metadata
         await supabase.storage
-          .from("drive-files")
+          .from("drive_files")
           .remove([fileName, versionPath]);
         await supabase.from("files").delete().eq("id", fileData.id);
         throw permissionError;
@@ -144,7 +144,7 @@ router.post(
       if (versionError) {
         // Rollback: delete files, metadata, and permission
         await supabase.storage
-          .from("drive-files")
+          .from("drive_files")
           .remove([fileName, versionPath]);
         await supabase.from("files").delete().eq("id", fileData.id);
         await supabase.from("permissions").delete().eq("file_id", fileData.id);
@@ -160,7 +160,7 @@ router.post(
 
       // Get public URL for the main file
       const { data: urlData } = supabase.storage
-        .from("drive-files")
+        .from("drive_files")
         .getPublicUrl(fileName);
 
       res.status(201).json({
@@ -213,7 +213,7 @@ router.get("/", authenticateJWT, async (req: Request, res: Response) => {
     // Add public URLs to each file
     const filesWithUrls = data.map((file) => ({
       ...file,
-      publicUrl: supabase.storage.from("drive-files").getPublicUrl(file.path)
+      publicUrl: supabase.storage.from("drive_files").getPublicUrl(file.path)
         .data.publicUrl,
     }));
 
@@ -392,7 +392,7 @@ router.patch(
 
       // Get public URL for the updated file
       const { data: urlData } = supabase.storage
-        .from("drive-files")
+        .from("drive_files")
         .getPublicUrl(data.path);
 
       res.status(200).json({
@@ -538,7 +538,7 @@ router.get("/share/:shareToken", async (req: Request, res: Response) => {
     // Generate signed URL (expires in 1 hour)
     const { data: signedUrlData, error: signedUrlError } =
       await supabase.storage
-        .from("drive-files")
+        .from("drive_files")
         .createSignedUrl(file.path, 3600); // 3600 seconds = 1 hour
 
     if (signedUrlError) {
@@ -615,7 +615,7 @@ router.patch("/share/:shareToken", async (req: Request, res: Response) => {
 
     // Download current file for versioning
     const { data: fileData, error: downloadError } = await supabase.storage
-      .from("drive-files")
+      .from("drive_files")
       .download(file.path);
 
     if (downloadError || !fileData) {
@@ -627,11 +627,11 @@ router.patch("/share/:shareToken", async (req: Request, res: Response) => {
     }
 
     // Store version in file_versions
-    const versionPath = `drive-files/versions/${
+    const versionPath = `drive_files/versions/${
       file.user_id
     }/${Date.now()}_${name}`;
     const { error: versionStorageError } = await supabase.storage
-      .from("drive-files")
+      .from("drive_files")
       .upload(versionPath, fileData, { contentType: file.format });
 
     if (versionStorageError) {
@@ -651,7 +651,7 @@ router.patch("/share/:shareToken", async (req: Request, res: Response) => {
       });
 
     if (versionInsertError) {
-      await supabase.storage.from("drive-files").remove([versionPath]);
+      await supabase.storage.from("drive_files").remove([versionPath]);
       throw versionInsertError;
     }
 
@@ -665,7 +665,7 @@ router.patch("/share/:shareToken", async (req: Request, res: Response) => {
 
     if (updateError) {
       // Rollback: delete version
-      await supabase.storage.from("drive-files").remove([versionPath]);
+      await supabase.storage.from("drive_files").remove([versionPath]);
       await supabase
         .from("file_versions")
         .delete()
@@ -687,7 +687,7 @@ router.patch("/share/:shareToken", async (req: Request, res: Response) => {
     // Generate signed URL for updated file
     const { data: signedUrlData, error: signedUrlError } =
       await supabase.storage
-        .from("drive-files")
+        .from("drive_files")
         .createSignedUrl(file.path, 3600);
 
     if (signedUrlError) {
@@ -805,11 +805,9 @@ router.get(
         .single();
 
       if (permissionError || !permission) {
-        return res
-          .status(403)
-          .json({
-            error: "Unauthorized: Only the owner can view version history",
-          });
+        return res.status(403).json({
+          error: "Unauthorized: Only the owner can view version history",
+        });
       }
 
       // Fetch file details
@@ -855,7 +853,7 @@ router.get(
           const { data: signedUrlData, error: signedUrlError } =
             await supabase.storage
 
-              .from("drive-files")
+              .from("drive_files")
 
               .createSignedUrl(version.path, 3600);
 
@@ -882,5 +880,61 @@ router.get(
     }
   }
 );
+router.get("/with-folders", authenticateJWT, async (req: Request, res: Response) => {
+  const user = req.user as { userId: number; email: string };
+  const { page = "1", limit = "50" } = req.query;
 
+  const pageNum = parseInt(page as string, 10);
+  const limitNum = parseInt(limit as string, 10);
+
+  if (isNaN(pageNum) || pageNum < 1 || isNaN(limitNum) || limitNum < 1 || limitNum > 100) {
+    return res.status(400).json({ error: "Invalid page or limit parameter" });
+  }
+
+  try {
+    // Get files
+    const { data: files, error: filesError } = await supabase
+      .from("files")
+      .select("id, name, size, format, path, user_id, folder_id, created_at")
+      .eq("user_id", user.userId)
+      .is("deleted_at", null)
+      .limit(limitNum);
+
+    if (filesError) throw filesError;
+
+    // Get folders
+    const { data: folders, error: foldersError } = await supabase
+      .from("folders")
+      .select("id, name, user_id, parent_id, created_at")
+      .eq("user_id", user.userId)
+      .is("deleted_at", null)
+      .limit(limitNum);
+
+    if (foldersError) throw foldersError;
+
+    // Add public URLs to files and type information
+    const filesWithUrls = files.map((file) => ({
+      ...file,
+      type: 'file' as const,
+      publicUrl: supabase.storage.from("drive_files").getPublicUrl(file.path).data.publicUrl,
+    }));
+
+    const foldersWithType = folders.map((folder) => ({
+      ...folder,
+      type: 'folder' as const,
+    }));
+
+    // Combine files and folders
+    const allItems = [...filesWithUrls, ...foldersWithType];
+
+    res.status(200).json({
+      message: "Files and folders retrieved successfully",
+      files: allItems, // Keep the same structure your frontend expects
+      folders: foldersWithType, // Also provide folders separately
+    });
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : "Unknown error";
+    res.status(500).json({ error: `Data retrieval failed: ${errorMessage}` });
+  }
+});
 export default router;

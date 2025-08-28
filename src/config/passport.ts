@@ -8,7 +8,9 @@ passport.use(
       clientID: process.env.GOOGLE_CLIENT_ID as string,
       clientSecret: process.env.GOOGLE_CLIENT_SECRET as string,
       callbackURL:
-        "https://google-drive-backend-ten.vercel.app/auth/google/callback",
+        process.env.NODE_ENV === "production"
+          ? "https://google-drive-backend-ten.vercel.app/auth/google/callback"
+          : "http://localhost:3000/auth/google/callback",
     },
     async (accessToken, refreshToken, profile, done) => {
       try {

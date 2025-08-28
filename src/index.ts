@@ -79,9 +79,10 @@ const app = express();
 const corsOptions: cors.CorsOptions = {
   origin: [
     "http://localhost:5173",
-    "http://localhost:3000",
+    "http://localhost:3000", 
     "https://google-drive-frontend-2cxh.vercel.app",
     "https://google-drive-backend-ten.vercel.app",
+    "https://accounts.google.com", // Add this for Google OAuth
   ],
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
@@ -91,9 +92,12 @@ const corsOptions: cors.CorsOptions = {
     "Content-Type",
     "Accept",
     "Authorization",
+    "X-Requested-With",
+    "Access-Control-Allow-Headers",
   ],
   optionsSuccessStatus: 200,
 };
+
 
 console.log("Setting up CORS middleware...");
 app.use(cors(corsOptions));
@@ -134,7 +138,11 @@ app.get("/ping", (req, res) => {
     environment: process.env.NODE_ENV || "development",
   });
 });
-
+app.use((req, res, next) => {
+  res.header('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
+  res.header('Cross-Origin-Embedder-Policy', 'unsafe-none');
+  next();
+});
 // Routes
 console.log("Registering routes...");
 try {
