@@ -46,6 +46,8 @@ function isValidShareToken(token: string): boolean {
 }
 
 // File upload route
+// Replace the upload route in your files.ts with this fixed version:
+
 router.post(
   "/upload",
   authenticateJWT,
@@ -57,11 +59,33 @@ router.post(
 
     const user = req.user as { userId: number; email: string };
     const file = req.file;
+    
+    // FIX: Get folder_id from request body
+    let folderId: number | null = null;
+    if (req.body.folder_id) {
+      folderId = parseInt(req.body.folder_id);
+      if (isNaN(folderId)) {
+        return res.status(400).json({ error: "Invalid folder ID" });
+      }
+      
+      // Verify folder exists and belongs to user
+      const { data: folder, error: folderError } = await supabase
+        .from("folders")
+        .select("id, user_id")
+        .eq("id", folderId)
+        .eq("user_id", user.userId)
+        .is("deleted_at", null)
+        .single();
+
+      if (folderError || !folder) {
+        return res.status(404).json({ error: "Folder not found or unauthorized" });
+      }
+    }
+
+    // FIX: Correct file path structure
     const fileName = `${user.userId}/${Date.now()}_${file.originalname}`;
-    const filePath = `drive_files/${fileName}`;
-    const versionPath = `drive_files/versions/${user.userId}/${Date.now()}_${
-      file.originalname
-    }`;
+    const filePath = fileName; // Remove drive_files prefix as it's the bucket name
+    const versionPath = `versions/${user.userId}/${Date.now()}_${file.originalname}`;
 
     try {
       // Start a transaction
@@ -71,11 +95,11 @@ router.post(
           name: file.originalname,
           size: file.size,
           format: file.mimetype,
-          path: filePath,
+          path: filePath, // Fixed path
           user_id: user.userId,
-          folder_id: null, // Root-level file for now
+          folder_id: folderId, // Now properly handles folder assignment
         })
-        .select("id, name, size, format, path, user_id")
+        .select("id, name, size, format, path, user_id, folder_id")
         .single();
 
       if (fileError) {
@@ -85,7 +109,7 @@ router.post(
       // Upload file to Supabase Storage (main file)
       const { error: storageError } = await supabase.storage
         .from("drive_files")
-        .upload(fileName, file.buffer, {
+        .upload(filePath, file.buffer, {
           contentType: file.mimetype,
         });
 
@@ -104,7 +128,7 @@ router.post(
 
       if (versionStorageError) {
         // Rollback: delete main file and metadata
-        await supabase.storage.from("drive_files").remove([fileName]);
+        await supabase.storage.from("drive_files").remove([filePath]);
         await supabase.from("files").delete().eq("id", fileData.id);
         throw versionStorageError;
       }
@@ -123,7 +147,7 @@ router.post(
         // Rollback: delete files and metadata
         await supabase.storage
           .from("drive_files")
-          .remove([fileName, versionPath]);
+          .remove([filePath, versionPath]);
         await supabase.from("files").delete().eq("id", fileData.id);
         throw permissionError;
       }
@@ -145,7 +169,7 @@ router.post(
         // Rollback: delete files, metadata, and permission
         await supabase.storage
           .from("drive_files")
-          .remove([fileName, versionPath]);
+          .remove([filePath, versionPath]);
         await supabase.from("files").delete().eq("id", fileData.id);
         await supabase.from("permissions").delete().eq("file_id", fileData.id);
         throw versionError;
@@ -156,17 +180,17 @@ router.post(
         file_name: file.originalname,
         size: file.size,
         format: file.mimetype,
+        folder_id: folderId,
       });
 
       // Get public URL for the main file
       const { data: urlData } = supabase.storage
         .from("drive_files")
-        .getPublicUrl(fileName);
+        .getPublicUrl(filePath);
 
       res.status(201).json({
         message: "File uploaded successfully",
-        file: fileData,
-        publicUrl: urlData.publicUrl,
+        file: { ...fileData, publicUrl: urlData.publicUrl },
       });
     } catch (error: unknown) {
       const errorMessage =
@@ -880,6 +904,8 @@ router.get(
     }
   }
 );
+// Replace the with-folders route in your files.ts with this:
+
 router.get("/with-folders", authenticateJWT, async (req: Request, res: Response) => {
   const user = req.user as { userId: number; email: string };
   const { page = "1", limit = "50" } = req.query;
@@ -912,7 +938,7 @@ router.get("/with-folders", authenticateJWT, async (req: Request, res: Response)
 
     if (foldersError) throw foldersError;
 
-    // Add public URLs to files and type information
+    // FIX: Correct public URL generation for files
     const filesWithUrls = files.map((file) => ({
       ...file,
       type: 'file' as const,

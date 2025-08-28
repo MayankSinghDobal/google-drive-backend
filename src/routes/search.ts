@@ -56,11 +56,11 @@ router.get('/', authenticateJWT, async (req: Request, res: Response) => {
       throw foldersError;
     }
 
-    // Add public URLs to files
+    // FIX: Use correct bucket name 'drive_files' instead of 'drive-files'
     const filesWithUrls = files.map((file) => ({
       ...file,
       type: 'file',
-      publicUrl: supabase.storage.from('drive-files').getPublicUrl(file.path).data.publicUrl,
+      publicUrl: supabase.storage.from('drive_files').getPublicUrl(file.path).data.publicUrl,
     }));
 
     // Add type to folders

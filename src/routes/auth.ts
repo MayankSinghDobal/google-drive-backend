@@ -117,6 +117,11 @@ router.post("/login", async (req: Request, res: Response) => {
       return res.status(401).json({ error: "Invalid credentials" });
     }
     
+    // Check if user has a password (not a Google OAuth user)
+    if (!user.password) {
+      return res.status(401).json({ error: "This account was created with Google. Please use Google Sign-In." });
+    }
+    
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
       console.error("Invalid password for:", email);
@@ -141,7 +146,7 @@ router.post("/login", async (req: Request, res: Response) => {
   }
 });
 
-// Google OAuth login via token
+// Google OAuth login via token - FIXED
 router.post("/google", async (req: Request, res: Response) => {
   const { token } = req.body;
   if (!token) {
@@ -180,9 +185,14 @@ router.post("/google", async (req: Request, res: Response) => {
       console.log("Found existing user:", user.email);
     } else {
       console.log("Creating new user for:", payload.email);
+      // FIX: Don't include password field for Google OAuth users
       const { data: newUser, error } = await supabase
         .from("users")
-        .insert([{ email: payload.email, name: payload.name || payload.email }])
+        .insert([{ 
+          email: payload.email, 
+          name: payload.name || payload.email,
+          password: null // Explicitly set password as null for Google OAuth users
+        }])
         .select("id, email, name")
         .single();
         
