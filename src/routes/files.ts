@@ -963,4 +963,78 @@ router.get("/with-folders", authenticateJWT, async (req: Request, res: Response)
     res.status(500).json({ error: `Data retrieval failed: ${errorMessage}` });
   }
 });
+router.get(
+  "/:fileId/download",
+  authenticateJWT,
+  async (req: Request, res: Response) => {
+    const user = req.user as { userId: number; email: string };
+    const { fileId } = req.params;
+
+    // Validate fileId
+    if (!isValidFileId(fileId)) {
+      return res.status(400).json({ error: "Invalid file ID format" });
+    }
+
+    try {
+      // Check if user has access to the file (owner or has permission)
+      const { data: permission, error: permissionError } = await supabase
+        .from("permissions")
+        .select("id, role")
+        .eq("file_id", fileId)
+        .eq("user_id", user.userId)
+        .single();
+
+      if (permissionError && permissionError.code !== "PGRST116") {
+        console.error("Permission check error:", permissionError);
+        return res.status(403).json({ error: "Unauthorized: No access to this file" });
+      }
+
+      if (!permission) {
+        return res.status(403).json({ error: "Unauthorized: No access to this file" });
+      }
+
+      // Fetch file details
+      const { data: file, error: fileError } = await supabase
+        .from("files")
+        .select("id, name, path, size, format")
+        .eq("id", fileId)
+        .eq("user_id", user.userId)
+        .is("deleted_at", null)
+        .single();
+
+      if (fileError || !file) {
+        return res.status(404).json({ error: "File not found" });
+      }
+
+      // Generate signed URL (expires in 1 hour)
+      const { data: signedUrlData, error: signedUrlError } = await supabase.storage
+        .from("drive_files")
+        .createSignedUrl(file.path, 3600); // 3600 seconds = 1 hour
+
+      if (signedUrlError) {
+        console.error("Signed URL error:", signedUrlError);
+        throw signedUrlError;
+      }
+
+      // Log download action
+      await logActivity(user.userId, parseInt(fileId), "download", {
+        file_name: file.name,
+        file_size: file.size,
+        file_format: file.format,
+      });
+
+      res.status(200).json({
+        message: "Download URL generated successfully",
+        signedUrl: signedUrlData.signedUrl,
+        fileName: file.name,
+        fileSize: file.size,
+        expiresIn: 3600, // seconds
+      });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : "Unknown error";
+      console.error("Download URL generation failed:", errorMessage);
+      res.status(500).json({ error: `Download failed: ${errorMessage}` });
+    }
+  }
+);
 export default router;
