@@ -3,11 +3,28 @@ import multer from "multer";
 import { supabase } from "../config/supabase";
 import { authenticateJWT } from "../middleware/auth";
 import { v4 as uuidv4 } from "uuid";
-
+import path from 'path';
 const router: Router = express.Router();
 
 // Configure Multer for file uploads
-const upload = multer({ storage: multer.memoryStorage() });
+const upload = multer({ 
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 100 * 1024 * 1024, // 100MB limit
+  },
+  fileFilter: (req, file, cb) => {
+    // Allow all file types - just check for dangerous executable types
+    const dangerousTypes = ['.exe', '.bat', '.cmd', '.scr', '.pif', '.com'];
+    const fileExt = path.extname(file.originalname).toLowerCase();
+    
+    if (dangerousTypes.includes(fileExt)) {
+      cb(new Error('File type not allowed for security reasons'));
+      return;
+    }
+    
+    cb(null, true);
+  }
+});
 
 // Log activity helper function
 async function logActivity(
@@ -527,7 +544,14 @@ router.post(
 );
 
 // Access shared file route
-router.get("/share/:shareToken", async (req: Request, res: Response) => {
+// Add proper CORS headers for shared routes
+router.get("/share/:shareToken", (req: Request, res: Response, next) => {
+  // Add CORS headers for shared files
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PATCH, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  next();
+}, async (req: Request, res: Response) => {
   const { shareToken } = req.params;
 
   // Validate shareToken
@@ -1037,4 +1061,16 @@ router.get(
     }
   }
 );
+router.post("/clipboard/:operation/:itemType/:itemId", authenticateJWT, async (req, res) => {
+  // Implementation for copy/cut operations
+});
+
+router.post("/paste/:folderId?", authenticateJWT, async (req, res) => {
+  // Implementation for paste operations
+});
+
+// Enhanced sharing with permissions
+router.patch("/:fileId/permissions", authenticateJWT, async (req, res) => {
+  // Update file permissions (download, preview, etc.)
+});
 export default router;
