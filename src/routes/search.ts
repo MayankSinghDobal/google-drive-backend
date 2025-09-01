@@ -6,7 +6,10 @@ const router: Router = express.Router();
 
 // Search files and folders route with pagination
 router.get('/', authenticateJWT, async (req: Request, res: Response) => {
-  const user = req.user as { userId: number; email: string };
+  const user = req.user as any;
+    if (!user || (!user.id && typeof user.id !== 'number')) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
   const { query, page = '1', limit = '10' } = req.query;
 
   // Validate input
@@ -34,7 +37,7 @@ router.get('/', authenticateJWT, async (req: Request, res: Response) => {
     const { data: files, error: filesError, count: filesCount } = await supabase
       .from('files')
       .select('id, name, size, format, path, user_id, folder_id, created_at', { count: 'exact' })
-      .eq('user_id', user.userId)
+      .eq('user_id', user.id)
       .is('deleted_at', null)
       .textSearch('name', cleanQuery, { type: 'websearch' })
       .range(offset, offset + limitNum - 1);
@@ -47,7 +50,7 @@ router.get('/', authenticateJWT, async (req: Request, res: Response) => {
     const { data: folders, error: foldersError, count: foldersCount } = await supabase
       .from('folders')
       .select('id, name, user_id, parent_id, created_at', { count: 'exact' })
-      .eq('user_id', user.userId)
+      .eq('user_id', user.id)
       .is('deleted_at', null)
       .textSearch('name', cleanQuery, { type: 'websearch' })
       .range(offset, offset + limitNum - 1);

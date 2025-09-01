@@ -21,12 +21,15 @@ router.use((req, res, next) => {
 // /me endpoint - FIX: Match frontend expectation
 router.get("/me", authenticateJWT, async (req: Request, res: Response) => {
   try {
-    const user = req.user as { userId: number; email: string };
+    const user = req.user as any;
+    if (!user || (!user.id && typeof user.id !== 'number')) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
     
     const { data, error } = await supabase
       .from("users")
       .select("id, email, name")
-      .eq("id", user.userId)
+      .eq("id", user.id)
       .single();
 
     if (error) {
@@ -81,7 +84,7 @@ router.post("/signup", async (req: Request, res: Response) => {
     }
     
     const token = jwt.sign(
-      { userId: data.id, email: data.email },
+      { id: data.id, email: data.email },
       process.env.JWT_SECRET as string,
       { expiresIn: "24h" }
     );
@@ -129,7 +132,7 @@ router.post("/login", async (req: Request, res: Response) => {
     }
     
     const token = jwt.sign(
-      { userId: user.id, email: user.email },
+      { id: user.id, email: user.email },
       process.env.JWT_SECRET as string,
       { expiresIn: "24h" }
     );
@@ -205,7 +208,7 @@ router.post("/google", async (req: Request, res: Response) => {
     }
     
     const jwtToken = jwt.sign(
-      { userId: user.id, email: user.email },
+      { id: user.id, email: user.email },
       process.env.JWT_SECRET as string,
       { expiresIn: "24h" }
     );
@@ -239,7 +242,7 @@ router.get(
   (req: Request, res: Response) => {
     const user = req.user as { id: number; email: string; name: string };
     const token = jwt.sign(
-      { userId: user.id, email: user.email },
+      { id: user.id, email: user.email },
       process.env.JWT_SECRET as string,
       { expiresIn: "24h" }
     );

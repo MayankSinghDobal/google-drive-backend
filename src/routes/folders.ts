@@ -6,7 +6,10 @@ const router: Router = express.Router();
 
 // Create folder route
 router.post('/create', authenticateJWT, async (req: Request, res: Response) => {
-  const user = req.user as { userId: number; email: string };
+  const user = req.user as any;
+    if (!user || (!user.id && typeof user.id !== 'number')) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
   const { name, parent_id } = req.body;
 
   // Basic input validation
@@ -21,7 +24,7 @@ router.post('/create', authenticateJWT, async (req: Request, res: Response) => {
         .from('folders')
         .select('id, user_id')
         .eq('id', parent_id)
-        .eq('user_id', user.userId)
+        .eq('user_id', user.id)
         .is('deleted_at', null)
         .single();
 
@@ -35,7 +38,7 @@ router.post('/create', authenticateJWT, async (req: Request, res: Response) => {
       .from('folders')
       .insert({
         name,
-        user_id: user.userId,
+        user_id: user.id,
         parent_id: parent_id || null,
       })
       .select('id, name, user_id, parent_id, created_at')
@@ -54,7 +57,10 @@ router.post('/create', authenticateJWT, async (req: Request, res: Response) => {
 
 // Folder retrieval route with pagination
 router.get('/', authenticateJWT, async (req: Request, res: Response) => {
-  const user = req.user as { userId: number; email: string };
+  const user = req.user as any;
+    if (!user || (!user.id && typeof user.id !== 'number')) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
   const { page = '1', limit = '10' } = req.query;
 
   const pageNum = parseInt(page as string, 10);
@@ -70,7 +76,7 @@ router.get('/', authenticateJWT, async (req: Request, res: Response) => {
     const { data, error, count } = await supabase
       .from('folders')
       .select('id, name, user_id, parent_id, created_at', { count: 'exact' })
-      .eq('user_id', user.userId)
+      .eq('user_id', user.id)
       .is('deleted_at', null)
       .range(offset, offset + limitNum - 1);
 
@@ -100,7 +106,10 @@ router.get('/', authenticateJWT, async (req: Request, res: Response) => {
 
 // Soft delete folder route
 router.delete('/:folderId', authenticateJWT, async (req: Request, res: Response) => {
-  const user = req.user as { userId: number; email: string };
+  const user = req.user as any;
+    if (!user || (!user.id && typeof user.id !== 'number')) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
   const { folderId } = req.params;
 
   try {
@@ -109,7 +118,7 @@ router.delete('/:folderId', authenticateJWT, async (req: Request, res: Response)
       .from('folders')
       .select('id, user_id')
       .eq('id', folderId)
-      .eq('user_id', user.userId)
+      .eq('user_id', user.id)
       .is('deleted_at', null)
       .single();
 
@@ -161,7 +170,10 @@ router.delete('/:folderId', authenticateJWT, async (req: Request, res: Response)
 
 // Update folder route
 router.patch('/:folderId', authenticateJWT, async (req: Request, res: Response) => {
-  const user = req.user as { userId: number; email: string };
+  const user = req.user as any;
+    if (!user || (!user.id && typeof user.id !== 'number')) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
   const { folderId } = req.params;
   const { name, parent_id } = req.body;
 
@@ -176,7 +188,7 @@ router.patch('/:folderId', authenticateJWT, async (req: Request, res: Response) 
       .from('folders')
       .select('id, user_id')
       .eq('id', folderId)
-      .eq('user_id', user.userId)
+      .eq('user_id', user.id)
       .is('deleted_at', null)
       .single();
 
@@ -194,7 +206,7 @@ router.patch('/:folderId', authenticateJWT, async (req: Request, res: Response) 
         .from('folders')
         .select('id, user_id')
         .eq('id', parent_id)
-        .eq('user_id', user.userId)
+        .eq('user_id', user.id)
         .is('deleted_at', null)
         .single();
 

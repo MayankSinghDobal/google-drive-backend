@@ -74,7 +74,10 @@ router.post(
       return res.status(400).json({ error: "No file uploaded" });
     }
 
-    const user = req.user as { userId: number; email: string };
+    const user = req.user as any;
+    if (!user || (!user.id && typeof user.id !== 'number')) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
     const file = req.file;
     
     // FIX: Get folder_id from request body
@@ -90,7 +93,7 @@ router.post(
         .from("folders")
         .select("id, user_id")
         .eq("id", folderId)
-        .eq("user_id", user.userId)
+        .eq("user_id", user.id)
         .is("deleted_at", null)
         .single();
 
@@ -100,9 +103,9 @@ router.post(
     }
 
     // FIX: Correct file path structure
-    const fileName = `${user.userId}/${Date.now()}_${file.originalname}`;
+    const fileName = `${user.id}/${Date.now()}_${file.originalname}`;
     const filePath = fileName; // Remove drive_files prefix as it's the bucket name
-    const versionPath = `versions/${user.userId}/${Date.now()}_${file.originalname}`;
+    const versionPath = `versions/${user.id}/${Date.now()}_${file.originalname}`;
 
     try {
       // Start a transaction
@@ -113,7 +116,7 @@ router.post(
           size: file.size,
           format: file.mimetype,
           path: filePath, // Fixed path
-          user_id: user.userId,
+          user_id: user.id,
           folder_id: folderId, // Now properly handles folder assignment
         })
         .select("id, name, size, format, path, user_id, folder_id")
@@ -155,7 +158,7 @@ router.post(
         .from("permissions")
         .insert({
           file_id: fileData.id,
-          user_id: user.userId,
+          user_id: user.id,
           role: "owner",
           share_token: uuidv4(),
         });
@@ -179,7 +182,7 @@ router.post(
           size: file.size,
           format: file.mimetype,
           path: versionPath,
-          created_by: user.userId,
+          created_by: user.id,
         });
 
       if (versionError) {
@@ -193,7 +196,7 @@ router.post(
       }
 
       // Log upload action
-      await logActivity(user.userId, fileData.id, "upload", {
+      await logActivity(user.id, fileData.id, "upload", {
         file_name: file.originalname,
         size: file.size,
         format: file.mimetype,
@@ -219,7 +222,10 @@ router.post(
 
 // File retrieval route with pagination
 router.get("/", authenticateJWT, async (req: Request, res: Response) => {
-  const user = req.user as { userId: number; email: string };
+  const user = req.user as any;
+    if (!user || (!user.id && typeof user.id !== 'number')) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
   const { page = "1", limit = "10" } = req.query;
 
   const pageNum = parseInt(page as string, 10);
@@ -243,7 +249,7 @@ router.get("/", authenticateJWT, async (req: Request, res: Response) => {
       .select("id, name, size, format, path, user_id, created_at", {
         count: "exact",
       })
-      .eq("user_id", user.userId)
+      .eq("user_id", user.id)
       .is("deleted_at", null)
       .range(offset, offset + limitNum - 1);
 
@@ -284,7 +290,10 @@ router.delete(
   "/:fileId",
   authenticateJWT,
   async (req: Request, res: Response) => {
-    const user = req.user as { userId: number; email: string };
+    const user = req.user as any;
+    if (!user || (!user.id && typeof user.id !== 'number')) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
     const { fileId } = req.params;
 
     // Validate fileId
@@ -298,7 +307,7 @@ router.delete(
         .from("permissions")
         .select("id")
         .eq("file_id", fileId)
-        .eq("user_id", user.userId)
+        .eq("user_id", user.id)
         .eq("role", "owner")
         .single();
 
@@ -330,7 +339,7 @@ router.delete(
       }
 
       // Log delete action
-      await logActivity(user.userId, parseInt(fileId), "delete", {
+      await logActivity(user.id, parseInt(fileId), "delete", {
         file_name: file.name,
       });
 
@@ -348,7 +357,10 @@ router.patch(
   "/:fileId",
   authenticateJWT,
   async (req: Request, res: Response) => {
-    const user = req.user as { userId: number; email: string };
+    const user = req.user as any;
+    if (!user || (!user.id && typeof user.id !== 'number')) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
     const { fileId } = req.params;
     const { name, folder_id } = req.body;
 
@@ -370,7 +382,7 @@ router.patch(
         .from("permissions")
         .select("id")
         .eq("file_id", fileId)
-        .eq("user_id", user.userId)
+        .eq("user_id", user.id)
         .eq("role", "owner")
         .single();
 
@@ -386,7 +398,7 @@ router.patch(
           .from("folders")
           .select("id, user_id")
           .eq("id", folder_id)
-          .eq("user_id", user.userId)
+          .eq("user_id", user.id)
           .is("deleted_at", null)
           .single();
 
@@ -425,7 +437,7 @@ router.patch(
       }
 
       // Log update action
-      await logActivity(user.userId, parseInt(fileId), "update", {
+      await logActivity(user.id, parseInt(fileId), "update", {
         old_name: currentFile.name,
         new_name: name || currentFile.name,
         folder_id: folder_id || null,
@@ -453,7 +465,10 @@ router.post(
   "/:fileId/share",
   authenticateJWT,
   async (req: Request, res: Response) => {
-    const user = req.user as { userId: number; email: string };
+    const user = req.user as any;
+    if (!user || (!user.id && typeof user.id !== 'number')) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
     const { fileId } = req.params;
     const { role } = req.body;
 
@@ -475,7 +490,7 @@ router.post(
         .from("permissions")
         .select("id")
         .eq("file_id", fileId)
-        .eq("user_id", user.userId)
+        .eq("user_id", user.id)
         .eq("role", "owner")
         .single();
 
@@ -516,7 +531,7 @@ router.post(
       }
 
       // Log share action
-      await logActivity(user.userId, parseInt(fileId), "share", {
+      await logActivity(user.id, parseInt(fileId), "share", {
         file_name: file.name,
         role,
         share_token: shareToken,
@@ -761,7 +776,10 @@ router.get(
   "/:fileId/subscribe",
   authenticateJWT,
   async (req: Request, res: Response) => {
-    const user = req.user as { userId: number; email: string };
+    const user = req.user as any;
+    if (!user || (!user.id && typeof user.id !== 'number')) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
     const { fileId } = req.params;
 
     // Validate fileId
@@ -775,7 +793,7 @@ router.get(
         .from("permissions")
         .select("id, role")
         .eq("file_id", fileId)
-        .or(`user_id.eq.${user.userId},role.in.(view,edit)`)
+        .or(`user_id.eq.${user.id},role.in.(view,edit)`)
         .single();
 
       if (permissionError || !permission) {
@@ -825,7 +843,10 @@ router.get(
   "/:fileId/versions",
   authenticateJWT,
   async (req: Request, res: Response) => {
-    const user = req.user as { userId: number; email: string };
+    const user = req.user as any;
+    if (!user || (!user.id && typeof user.id !== 'number')) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
 
     const { fileId } = req.params;
 
@@ -846,7 +867,7 @@ router.get(
 
         .eq("file_id", fileId)
 
-        .eq("user_id", user.userId)
+        .eq("user_id", user.id)
 
         .eq("role", "owner")
 
@@ -931,7 +952,10 @@ router.get(
 // Replace the with-folders route in your files.ts with this:
 
 router.get("/with-folders", authenticateJWT, async (req: Request, res: Response) => {
-  const user = req.user as { userId: number; email: string };
+  const user = req.user as any;
+    if (!user || (!user.id && typeof user.id !== 'number')) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
   const { page = "1", limit = "50" } = req.query;
 
   const pageNum = parseInt(page as string, 10);
@@ -946,7 +970,7 @@ router.get("/with-folders", authenticateJWT, async (req: Request, res: Response)
     const { data: files, error: filesError } = await supabase
       .from("files")
       .select("id, name, size, format, path, user_id, folder_id, created_at")
-      .eq("user_id", user.userId)
+      .eq("user_id", user.id)
       .is("deleted_at", null)
       .limit(limitNum);
 
@@ -956,7 +980,7 @@ router.get("/with-folders", authenticateJWT, async (req: Request, res: Response)
     const { data: folders, error: foldersError } = await supabase
       .from("folders")
       .select("id, name, user_id, parent_id, created_at")
-      .eq("user_id", user.userId)
+      .eq("user_id", user.id)
       .is("deleted_at", null)
       .limit(limitNum);
 
@@ -991,7 +1015,10 @@ router.get(
   "/:fileId/download",
   authenticateJWT,
   async (req: Request, res: Response) => {
-    const user = req.user as { userId: number; email: string };
+    const user = req.user as any;
+    if (!user || (!user.id && typeof user.id !== 'number')) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
     const { fileId } = req.params;
 
     // Validate fileId
@@ -1005,7 +1032,7 @@ router.get(
         .from("permissions")
         .select("id, role")
         .eq("file_id", fileId)
-        .eq("user_id", user.userId)
+        .eq("user_id", user.id)
         .single();
 
       if (permissionError && permissionError.code !== "PGRST116") {
@@ -1022,7 +1049,7 @@ router.get(
         .from("files")
         .select("id, name, path, size, format")
         .eq("id", fileId)
-        .eq("user_id", user.userId)
+        .eq("user_id", user.id)
         .is("deleted_at", null)
         .single();
 
@@ -1041,7 +1068,7 @@ router.get(
       }
 
       // Log download action
-      await logActivity(user.userId, parseInt(fileId), "download", {
+      await logActivity(user.id, parseInt(fileId), "download", {
         file_name: file.name,
         file_size: file.size,
         file_format: file.format,
