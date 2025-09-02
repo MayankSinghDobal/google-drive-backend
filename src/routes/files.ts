@@ -4,24 +4,87 @@ import { supabase } from "../config/supabase";
 import { authenticateJWT } from "../middleware/auth";
 import { v4 as uuidv4 } from "uuid";
 import path from 'path';
+
 const router: Router = express.Router();
 
-// Configure Multer for file uploads
+// Enhanced file type validation - Support ALL common file types
+const allowedMimeTypes = [
+  // Images
+  'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml', 'image/bmp', 'image/tiff',
+  
+  // Documents
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  
+  // Text files
+  'text/plain', 'text/html', 'text/css', 'text/javascript', 'text/typescript',
+  'text/markdown', 'text/csv', 'text/xml', 'application/json',
+  'application/javascript', 'application/typescript',
+  
+  // Archives
+  'application/zip', 'application/x-zip-compressed',
+  'application/x-rar-compressed', 'application/x-rar',
+  'application/x-7z-compressed', 'application/gzip',
+  'application/x-tar', 'application/x-bzip2',
+  
+  // Audio
+  'audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/ogg', 'audio/aac',
+  'audio/flac', 'audio/wma', 'audio/m4a',
+  
+  // Video
+  'video/mp4', 'video/avi', 'video/mov', 'video/wmv', 'video/flv',
+  'video/webm', 'video/mkv', 'video/m4v', 'video/3gp',
+  'video/quicktime', 'video/x-msvideo',
+  
+  // Code files
+  'text/x-python', 'text/x-java', 'text/x-csharp', 'text/x-php',
+  'text/x-ruby', 'text/x-go', 'text/x-rust', 'text/x-kotlin',
+  'application/x-python-code',
+  
+  // Others
+  'application/octet-stream', 'application/x-executable',
+  'application/vnd.android.package-archive', // APK files
+  'application/x-deb', // DEB packages
+  'application/x-rpm', // RPM packages
+];
+
+const dangerousExtensions = [
+  '.exe', '.bat', '.cmd', '.scr', '.pif', '.com', '.msi', 
+  '.dll', '.sys', '.vbs', '.js', '.jar'
+];
+
+// Configure Multer for file uploads with enhanced validation
 const upload = multer({ 
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 100 * 1024 * 1024, // 100MB limit
+    fileSize: 500 * 1024 * 1024, // Increased to 500MB
+    files: 1,
   },
   fileFilter: (req, file, cb) => {
-    // Allow all file types - just check for dangerous executable types
-    const dangerousTypes = ['.exe', '.bat', '.cmd', '.scr', '.pif', '.com'];
     const fileExt = path.extname(file.originalname).toLowerCase();
     
-    if (dangerousTypes.includes(fileExt)) {
+    // Check for dangerous executable types
+    if (dangerousExtensions.includes(fileExt)) {
+      cb(new Error('Executable files are not allowed for security reasons'));
+      return;
+    }
+    
+    // If MIME type is not in our list, but it's not dangerous, allow it
+    const isDangerous = dangerousExtensions.some(ext => 
+      file.originalname.toLowerCase().endsWith(ext)
+    );
+    
+    if (isDangerous) {
       cb(new Error('File type not allowed for security reasons'));
       return;
     }
     
+    // Accept all non-dangerous files
     cb(null, true);
   }
 });
@@ -62,9 +125,7 @@ function isValidShareToken(token: string): boolean {
   return /^[a-fA-F0-9-]+$/.test(token);
 }
 
-// File upload route
-// Replace the upload route in your files.ts with this fixed version:
-
+// Enhanced file upload route
 router.post(
   "/upload",
   authenticateJWT,
@@ -78,9 +139,11 @@ router.post(
     if (!user || (!user.id && typeof user.id !== 'number')) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
-    const file = req.file;
     
-    // FIX: Get folder_id from request body
+    const file = req.file;
+    console.log(`Uploading file: ${file.originalname}, MIME: ${file.mimetype}, Size: ${file.size}`);
+    
+    // Get folder_id from request body
     let folderId: number | null = null;
     if (req.body.folder_id) {
       folderId = parseInt(req.body.folder_id);
@@ -102,58 +165,68 @@ router.post(
       }
     }
 
-    // FIX: Correct file path structure
-    const fileName = `${user.id}/${Date.now()}_${file.originalname}`;
-    const filePath = fileName; // Remove drive_files prefix as it's the bucket name
-    const versionPath = `versions/${user.id}/${Date.now()}_${file.originalname}`;
+    // Generate unique file paths
+    const timestamp = Date.now();
+    const sanitizedFileName = file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
+    const fileName = `${user.id}/${timestamp}_${sanitizedFileName}`;
+    const filePath = fileName;
+    const versionPath = `versions/${user.id}/${timestamp}_${sanitizedFileName}`;
 
     try {
-      // Start a transaction
+      // Insert file metadata first
       const { data: fileData, error: fileError } = await supabase
         .from("files")
         .insert({
           name: file.originalname,
           size: file.size,
-          format: file.mimetype,
-          path: filePath, // Fixed path
+          format: file.mimetype || 'application/octet-stream',
+          path: filePath,
           user_id: user.id,
-          folder_id: folderId, // Now properly handles folder assignment
+          folder_id: folderId,
+          is_public: false,
+          visibility: 'private'
         })
         .select("id, name, size, format, path, user_id, folder_id")
         .single();
 
       if (fileError) {
+        console.error('Database insert error:', fileError);
         throw fileError;
       }
+
+      console.log('File metadata saved:', fileData);
 
       // Upload file to Supabase Storage (main file)
       const { error: storageError } = await supabase.storage
         .from("drive_files")
         .upload(filePath, file.buffer, {
-          contentType: file.mimetype,
+          contentType: file.mimetype || 'application/octet-stream',
+          upsert: false
         });
 
       if (storageError) {
+        console.error('Storage upload error:', storageError);
         // Rollback: delete file metadata
         await supabase.from("files").delete().eq("id", fileData.id);
         throw storageError;
       }
 
-      // Upload file to Supabase Storage (version)
+      console.log('File uploaded to storage successfully');
+
+      // Upload file to versions folder
       const { error: versionStorageError } = await supabase.storage
         .from("drive_files")
         .upload(versionPath, file.buffer, {
-          contentType: file.mimetype,
+          contentType: file.mimetype || 'application/octet-stream',
+          upsert: false
         });
 
       if (versionStorageError) {
-        // Rollback: delete main file and metadata
-        await supabase.storage.from("drive_files").remove([filePath]);
-        await supabase.from("files").delete().eq("id", fileData.id);
-        throw versionStorageError;
+        console.warn('Version upload failed (non-critical):', versionStorageError);
+        // Don't rollback for version errors - main file is more important
       }
 
-      // Assign 'owner' role to the uploader
+      // Create owner permission
       const { error: permissionError } = await supabase
         .from("permissions")
         .insert({
@@ -164,35 +237,33 @@ router.post(
         });
 
       if (permissionError) {
+        console.error('Permission creation error:', permissionError);
         // Rollback: delete files and metadata
-        await supabase.storage
-          .from("drive_files")
-          .remove([filePath, versionPath]);
+        await supabase.storage.from("drive_files").remove([filePath]);
+        if (!versionStorageError) {
+          await supabase.storage.from("drive_files").remove([versionPath]);
+        }
         await supabase.from("files").delete().eq("id", fileData.id);
         throw permissionError;
       }
 
-      // Store version in file_versions
-      const { error: versionError } = await supabase
-        .from("file_versions")
-        .insert({
-          file_id: fileData.id,
-          version_number: 1,
-          name: file.originalname,
-          size: file.size,
-          format: file.mimetype,
-          path: versionPath,
-          created_by: user.id,
-        });
+      // Store version in file_versions (only if version upload succeeded)
+      if (!versionStorageError) {
+        const { error: versionError } = await supabase
+          .from("file_versions")
+          .insert({
+            file_id: fileData.id,
+            version_number: 1,
+            name: file.originalname,
+            size: file.size,
+            format: file.mimetype || 'application/octet-stream',
+            path: versionPath,
+            created_by: user.id,
+          });
 
-      if (versionError) {
-        // Rollback: delete files, metadata, and permission
-        await supabase.storage
-          .from("drive_files")
-          .remove([filePath, versionPath]);
-        await supabase.from("files").delete().eq("id", fileData.id);
-        await supabase.from("permissions").delete().eq("file_id", fileData.id);
-        throw versionError;
+        if (versionError) {
+          console.warn('Version metadata save failed (non-critical):', versionError);
+        }
       }
 
       // Log upload action
@@ -208,14 +279,100 @@ router.post(
         .from("drive_files")
         .getPublicUrl(filePath);
 
+      console.log('Upload completed successfully');
+
       res.status(201).json({
         message: "File uploaded successfully",
-        file: { ...fileData, publicUrl: urlData.publicUrl },
+        file: { 
+          ...fileData, 
+          publicUrl: urlData.publicUrl,
+          type: 'file'
+        },
       });
     } catch (error: unknown) {
-      const errorMessage =
-        error instanceof Error ? error.message : "Unknown error";
+      const errorMessage = error instanceof Error ? error.message : "Unknown error";
+      console.error('Upload failed:', errorMessage);
       res.status(500).json({ error: `File upload failed: ${errorMessage}` });
+    }
+  }
+);
+
+// Enhanced download route with proper headers
+router.get(
+  "/:fileId/download",
+  authenticateJWT,
+  async (req: Request, res: Response) => {
+    const user = req.user as any;
+    if (!user || (!user.id && typeof user.id !== 'number')) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    
+    const { fileId } = req.params;
+
+    if (!isValidFileId(fileId)) {
+      return res.status(400).json({ error: "Invalid file ID format" });
+    }
+
+    try {
+      // Check if user has access to the file
+      const { data: permission, error: permissionError } = await supabase
+        .from("permissions")
+        .select("id, role")
+        .eq("file_id", fileId)
+        .eq("user_id", user.id)
+        .single();
+
+      if (permissionError && permissionError.code !== "PGRST116") {
+        console.error("Permission check error:", permissionError);
+        return res.status(403).json({ error: "Unauthorized: No access to this file" });
+      }
+
+      if (!permission) {
+        return res.status(403).json({ error: "Unauthorized: No access to this file" });
+      }
+
+      // Fetch file details
+      const { data: file, error: fileError } = await supabase
+        .from("files")
+        .select("id, name, path, size, format")
+        .eq("id", fileId)
+        .eq("user_id", user.id)
+        .is("deleted_at", null)
+        .single();
+
+      if (fileError || !file) {
+        return res.status(404).json({ error: "File not found" });
+      }
+
+      // Generate signed URL with longer expiration
+      const { data: signedUrlData, error: signedUrlError } = await supabase.storage
+        .from("drive_files")
+        .createSignedUrl(file.path, 7200); // 2 hours
+
+      if (signedUrlError) {
+        console.error("Signed URL error:", signedUrlError);
+        throw signedUrlError;
+      }
+
+      // Log download action
+      await logActivity(user.id, parseInt(fileId), "download", {
+        file_name: file.name,
+        file_size: file.size,
+        file_format: file.format,
+      });
+
+      res.status(200).json({
+        message: "Download URL generated successfully",
+        signedUrl: signedUrlData.signedUrl,
+        fileName: file.name,
+        fileSize: file.size,
+        fileFormat: file.format,
+        expiresIn: 7200,
+      });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : "Unknown error";
+      console.error("Download URL generation failed:", errorMessage);
+      res.status(500).json({ error: `Download failed: ${errorMessage}` });
     }
   }
 );
@@ -223,9 +380,10 @@ router.post(
 // File retrieval route with pagination
 router.get("/", authenticateJWT, async (req: Request, res: Response) => {
   const user = req.user as any;
-    if (!user || (!user.id && typeof user.id !== 'number')) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
+  if (!user || (!user.id && typeof user.id !== 'number')) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  
   const { page = "1", limit = "10" } = req.query;
 
   const pageNum = parseInt(page as string, 10);
@@ -282,6 +440,69 @@ router.get("/", authenticateJWT, async (req: Request, res: Response) => {
     const errorMessage =
       error instanceof Error ? error.message : "Unknown error";
     res.status(500).json({ error: `File retrieval failed: ${errorMessage}` });
+  }
+});
+
+// Get files and folders with enhanced data
+router.get("/with-folders", authenticateJWT, async (req: Request, res: Response) => {
+  const user = req.user as any;
+  if (!user || (!user.id && typeof user.id !== 'number')) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  
+  const { page = "1", limit = "50" } = req.query;
+
+  const pageNum = parseInt(page as string, 10);
+  const limitNum = parseInt(limit as string, 10);
+
+  if (isNaN(pageNum) || pageNum < 1 || isNaN(limitNum) || limitNum < 1 || limitNum > 100) {
+    return res.status(400).json({ error: "Invalid page or limit parameter" });
+  }
+
+  try {
+    // Get files
+    const { data: files, error: filesError } = await supabase
+      .from("files")
+      .select("id, name, size, format, path, user_id, folder_id, created_at")
+      .eq("user_id", user.id)
+      .is("deleted_at", null)
+      .limit(limitNum);
+
+    if (filesError) throw filesError;
+
+    // Get folders
+    const { data: folders, error: foldersError } = await supabase
+      .from("folders")
+      .select("id, name, user_id, parent_id, created_at")
+      .eq("user_id", user.id)
+      .is("deleted_at", null)
+      .limit(limitNum);
+
+    if (foldersError) throw foldersError;
+
+    // Enhanced files with URLs and metadata
+    const filesWithUrls = files.map((file) => ({
+      ...file,
+      type: 'file' as const,
+      publicUrl: supabase.storage.from("drive_files").getPublicUrl(file.path).data.publicUrl,
+    }));
+
+    const foldersWithType = folders.map((folder) => ({
+      ...folder,
+      type: 'folder' as const,
+    }));
+
+    // Combine files and folders
+    const allItems = [...filesWithUrls, ...foldersWithType];
+
+    res.status(200).json({
+      message: "Files and folders retrieved successfully",
+      files: allItems,
+      folders: foldersWithType,
+    });
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : "Unknown error";
+    res.status(500).json({ error: `Data retrieval failed: ${errorMessage}` });
   }
 });
 
@@ -559,7 +780,6 @@ router.post(
 );
 
 // Access shared file route
-// Add proper CORS headers for shared routes
 router.get("/share/:shareToken", (req: Request, res: Response, next) => {
   // Add CORS headers for shared files
   res.header('Access-Control-Allow-Origin', '*');
@@ -623,7 +843,7 @@ router.get("/share/:shareToken", (req: Request, res: Response, next) => {
   }
 });
 
-// Edit shared file route (REMOVED SOCKET.IO BROADCASTING)
+// Edit shared file route
 router.patch("/share/:shareToken", async (req: Request, res: Response) => {
   const { shareToken } = req.params;
   const { name } = req.body;
@@ -690,9 +910,7 @@ router.patch("/share/:shareToken", async (req: Request, res: Response) => {
     }
 
     // Store version in file_versions
-    const versionPath = `drive_files/versions/${
-      file.user_id
-    }/${Date.now()}_${name}`;
+    const versionPath = `versions/${file.user_id}/${Date.now()}_${name}`;
     const { error: versionStorageError } = await supabase.storage
       .from("drive_files")
       .upload(versionPath, fileData, { contentType: file.format });
@@ -743,9 +961,6 @@ router.patch("/share/:shareToken", async (req: Request, res: Response) => {
       new_name: name,
       share_token: shareToken,
     });
-
-    // NOTE: Socket.IO broadcasting removed for Vercel compatibility
-    // Real-time updates would need to be implemented differently (e.g., webhooks, polling)
 
     // Generate signed URL for updated file
     const { data: signedUrlData, error: signedUrlError } =
@@ -803,17 +1018,11 @@ router.get(
       }
 
       // Fetch file details
-
       const { data: file, error: fileError } = await supabase
-
         .from("files")
-
         .select("id, name, user_id")
-
         .eq("id", fileId)
-
         .is("deleted_at", null)
-
         .single();
 
       if (fileError || !file) {
@@ -822,23 +1031,19 @@ router.get(
 
       res.status(200).json({
         message: "Subscribed to file updates",
-
         file_id: fileId,
-
         instructions:
           'Connect to WebSocket at ws://localhost:3000 and emit "join_file" with fileId',
       });
     } catch (error: unknown) {
       const errorMessage =
         error instanceof Error ? error.message : "Unknown error";
-
       res.status(500).json({ error: `Subscription failed: ${errorMessage}` });
     }
   }
 );
 
-// Get file versions route - REMOVED REGEX PATTERN
-
+// Get file versions route
 router.get(
   "/:fileId/versions",
   authenticateJWT,
@@ -851,26 +1056,18 @@ router.get(
     const { fileId } = req.params;
 
     // Validate fileId
-
     if (!isValidFileId(fileId)) {
       return res.status(400).json({ error: "Invalid file ID format" });
     }
 
     try {
       // Check if file exists and user has 'owner' role
-
       const { data: permission, error: permissionError } = await supabase
-
         .from("permissions")
-
         .select("id")
-
         .eq("file_id", fileId)
-
         .eq("user_id", user.id)
-
         .eq("role", "owner")
-
         .single();
 
       if (permissionError || !permission) {
@@ -880,17 +1077,11 @@ router.get(
       }
 
       // Fetch file details
-
       const { data: file, error: fileError } = await supabase
-
         .from("files")
-
         .select("id, user_id")
-
         .eq("id", fileId)
-
         .is("deleted_at", null)
-
         .single();
 
       if (fileError || !file) {
@@ -898,17 +1089,12 @@ router.get(
       }
 
       // Fetch version history
-
       const { data: versions, error: versionsError } = await supabase
-
         .from("file_versions")
-
         .select(
           "id, version_number, name, size, format, path, created_at, created_by"
         )
-
         .eq("file_id", fileId)
-
         .order("version_number", { ascending: true });
 
       if (versionsError) {
@@ -916,19 +1102,15 @@ router.get(
       }
 
       // Add signed URLs to versions
-
       const versionsWithUrls = await Promise.all(
         versions.map(async (version) => {
           const { data: signedUrlData, error: signedUrlError } =
             await supabase.storage
-
               .from("drive_files")
-
               .createSignedUrl(version.path, 3600);
 
           return {
             ...version,
-
             signedUrl: signedUrlError ? null : signedUrlData.signedUrl,
           };
         })
@@ -936,162 +1118,24 @@ router.get(
 
       res.status(200).json({
         message: "File versions retrieved successfully",
-
         versions: versionsWithUrls,
       });
     } catch (error: unknown) {
       const errorMessage =
         error instanceof Error ? error.message : "Unknown error";
-
       res
         .status(500)
         .json({ error: `Version retrieval failed: ${errorMessage}` });
     }
   }
 );
-// Replace the with-folders route in your files.ts with this:
 
-router.get("/with-folders", authenticateJWT, async (req: Request, res: Response) => {
-  const user = req.user as any;
-    if (!user || (!user.id && typeof user.id !== 'number')) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
-  const { page = "1", limit = "50" } = req.query;
-
-  const pageNum = parseInt(page as string, 10);
-  const limitNum = parseInt(limit as string, 10);
-
-  if (isNaN(pageNum) || pageNum < 1 || isNaN(limitNum) || limitNum < 1 || limitNum > 100) {
-    return res.status(400).json({ error: "Invalid page or limit parameter" });
-  }
-
-  try {
-    // Get files
-    const { data: files, error: filesError } = await supabase
-      .from("files")
-      .select("id, name, size, format, path, user_id, folder_id, created_at")
-      .eq("user_id", user.id)
-      .is("deleted_at", null)
-      .limit(limitNum);
-
-    if (filesError) throw filesError;
-
-    // Get folders
-    const { data: folders, error: foldersError } = await supabase
-      .from("folders")
-      .select("id, name, user_id, parent_id, created_at")
-      .eq("user_id", user.id)
-      .is("deleted_at", null)
-      .limit(limitNum);
-
-    if (foldersError) throw foldersError;
-
-    // FIX: Correct public URL generation for files
-    const filesWithUrls = files.map((file) => ({
-      ...file,
-      type: 'file' as const,
-      publicUrl: supabase.storage.from("drive_files").getPublicUrl(file.path).data.publicUrl,
-    }));
-
-    const foldersWithType = folders.map((folder) => ({
-      ...folder,
-      type: 'folder' as const,
-    }));
-
-    // Combine files and folders
-    const allItems = [...filesWithUrls, ...foldersWithType];
-
-    res.status(200).json({
-      message: "Files and folders retrieved successfully",
-      files: allItems, // Keep the same structure your frontend expects
-      folders: foldersWithType, // Also provide folders separately
-    });
-  } catch (error: unknown) {
-    const errorMessage = error instanceof Error ? error.message : "Unknown error";
-    res.status(500).json({ error: `Data retrieval failed: ${errorMessage}` });
-  }
-});
-router.get(
-  "/:fileId/download",
-  authenticateJWT,
-  async (req: Request, res: Response) => {
-    const user = req.user as any;
-    if (!user || (!user.id && typeof user.id !== 'number')) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
-    const { fileId } = req.params;
-
-    // Validate fileId
-    if (!isValidFileId(fileId)) {
-      return res.status(400).json({ error: "Invalid file ID format" });
-    }
-
-    try {
-      // Check if user has access to the file (owner or has permission)
-      const { data: permission, error: permissionError } = await supabase
-        .from("permissions")
-        .select("id, role")
-        .eq("file_id", fileId)
-        .eq("user_id", user.id)
-        .single();
-
-      if (permissionError && permissionError.code !== "PGRST116") {
-        console.error("Permission check error:", permissionError);
-        return res.status(403).json({ error: "Unauthorized: No access to this file" });
-      }
-
-      if (!permission) {
-        return res.status(403).json({ error: "Unauthorized: No access to this file" });
-      }
-
-      // Fetch file details
-      const { data: file, error: fileError } = await supabase
-        .from("files")
-        .select("id, name, path, size, format")
-        .eq("id", fileId)
-        .eq("user_id", user.id)
-        .is("deleted_at", null)
-        .single();
-
-      if (fileError || !file) {
-        return res.status(404).json({ error: "File not found" });
-      }
-
-      // Generate signed URL (expires in 1 hour)
-      const { data: signedUrlData, error: signedUrlError } = await supabase.storage
-        .from("drive_files")
-        .createSignedUrl(file.path, 3600); // 3600 seconds = 1 hour
-
-      if (signedUrlError) {
-        console.error("Signed URL error:", signedUrlError);
-        throw signedUrlError;
-      }
-
-      // Log download action
-      await logActivity(user.id, parseInt(fileId), "download", {
-        file_name: file.name,
-        file_size: file.size,
-        file_format: file.format,
-      });
-
-      res.status(200).json({
-        message: "Download URL generated successfully",
-        signedUrl: signedUrlData.signedUrl,
-        fileName: file.name,
-        fileSize: file.size,
-        expiresIn: 3600, // seconds
-      });
-    } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : "Unknown error";
-      console.error("Download URL generation failed:", errorMessage);
-      res.status(500).json({ error: `Download failed: ${errorMessage}` });
-    }
-  }
-);
+// Clipboard operations
 router.post("/clipboard/:operation/:itemType/:itemId", authenticateJWT, async (req, res) => {
   // Implementation for copy/cut operations
 });
 
+// Paste operation
 router.post("/paste/:folderId?", authenticateJWT, async (req, res) => {
   // Implementation for paste operations
 });
@@ -1100,4 +1144,5 @@ router.post("/paste/:folderId?", authenticateJWT, async (req, res) => {
 router.patch("/:fileId/permissions", authenticateJWT, async (req, res) => {
   // Update file permissions (download, preview, etc.)
 });
+
 export default router;
