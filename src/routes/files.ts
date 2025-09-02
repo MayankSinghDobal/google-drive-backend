@@ -223,7 +223,6 @@ router.post(
 
       if (versionStorageError) {
         console.warn('Version upload failed (non-critical):', versionStorageError);
-        // Don't rollback for version errors - main file is more important
       }
 
       // Create owner permission
@@ -297,7 +296,7 @@ router.post(
   }
 );
 
-// Enhanced download route with proper headers
+// Enhanced download route with proper file streaming
 router.get(
   "/:fileId/download",
   authenticateJWT,
@@ -317,7 +316,7 @@ router.get(
       // Check if user has access to the file
       const { data: permission, error: permissionError } = await supabase
         .from("permissions")
-        .select("id, role")
+        .select("id, role, can_download")
         .eq("file_id", fileId)
         .eq("user_id", user.id)
         .single();
@@ -327,8 +326,8 @@ router.get(
         return res.status(403).json({ error: "Unauthorized: No access to this file" });
       }
 
-      if (!permission) {
-        return res.status(403).json({ error: "Unauthorized: No access to this file" });
+      if (!permission || permission.can_download === false) {
+        return res.status(403).json({ error: "Unauthorized: Download not allowed" });
       }
 
       // Fetch file details
@@ -336,7 +335,6 @@ router.get(
         .from("files")
         .select("id, name, path, size, format")
         .eq("id", fileId)
-        .eq("user_id", user.id)
         .is("deleted_at", null)
         .single();
 
@@ -344,14 +342,14 @@ router.get(
         return res.status(404).json({ error: "File not found" });
       }
 
-      // Generate signed URL with longer expiration
-      const { data: signedUrlData, error: signedUrlError } = await supabase.storage
+      // Download file from storage
+      const { data: fileData, error: downloadError } = await supabase.storage
         .from("drive_files")
-        .createSignedUrl(file.path, 7200); // 2 hours
+        .download(file.path);
 
-      if (signedUrlError) {
-        console.error("Signed URL error:", signedUrlError);
-        throw signedUrlError;
+      if (downloadError || !fileData) {
+        console.error("Storage download error:", downloadError);
+        return res.status(500).json({ error: "Failed to download file from storage" });
       }
 
       // Log download action
@@ -361,17 +359,19 @@ router.get(
         file_format: file.format,
       });
 
-      res.status(200).json({
-        message: "Download URL generated successfully",
-        signedUrl: signedUrlData.signedUrl,
-        fileName: file.name,
-        fileSize: file.size,
-        fileFormat: file.format,
-        expiresIn: 7200,
-      });
+      // Set proper headers for file download
+      res.setHeader('Content-Type', file.format || 'application/octet-stream');
+      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(file.name)}"`);
+      res.setHeader('Content-Length', file.size.toString());
+      res.setHeader('Cache-Control', 'no-cache');
+
+      // Convert blob to buffer and send
+      const buffer = await fileData.arrayBuffer();
+      res.send(Buffer.from(buffer));
+
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : "Unknown error";
-      console.error("Download URL generation failed:", errorMessage);
+      console.error("Download failed:", errorMessage);
       res.status(500).json({ error: `Download failed: ${errorMessage}` });
     }
   }
@@ -681,7 +681,7 @@ router.patch(
   }
 );
 
-// Share file route
+// Enhanced share file route with granular permissions
 router.post(
   "/:fileId/share",
   authenticateJWT,
@@ -691,7 +691,13 @@ router.post(
       return res.status(401).json({ error: 'Unauthorized' });
     }
     const { fileId } = req.params;
-    const { role } = req.body;
+    const { 
+      role, 
+      can_download = true, 
+      can_preview = true, 
+      expires_at = null, 
+      max_access_count = null 
+    } = req.body;
 
     // Validate fileId
     if (!isValidFileId(fileId)) {
@@ -735,7 +741,7 @@ router.post(
       // Generate unique share token
       const shareToken = uuidv4();
 
-      // Insert permission into Supabase
+      // Insert permission into Supabase with enhanced permissions
       const { data: newPermission, error: insertError } = await supabase
         .from("permissions")
         .insert({
@@ -743,8 +749,13 @@ router.post(
           user_id: null, // Null for public links
           role,
           share_token: shareToken,
+          can_download,
+          can_preview,
+          expires_at: expires_at ? new Date(expires_at).toISOString() : null,
+          max_access_count,
+          access_count: 0,
         })
-        .select("id, file_id, role, share_token")
+        .select("id, file_id, role, share_token, can_download, can_preview, expires_at, max_access_count")
         .single();
 
       if (insertError) {
@@ -756,15 +767,16 @@ router.post(
         file_name: file.name,
         role,
         share_token: shareToken,
+        permissions: { can_download, can_preview, expires_at, max_access_count },
       });
 
       // Generate shareable link - use proper base URL
       const baseUrl =
         process.env.NODE_ENV === "production"
-          ? "https://google-drive-backend-ten.vercel.app"
-          : process.env.BASE_URL || "http://localhost:3000";
+          ? "https://google-drive-frontend-2cxh.vercel.app"
+          : process.env.FRONTEND_URL || "http://localhost:5173";
 
-      const shareableLink = `${baseUrl}/files/share/${shareToken}`;
+      const shareableLink = `${baseUrl}/share/${shareToken}`;
 
       res.status(201).json({
         message: "File shared successfully",
@@ -779,14 +791,8 @@ router.post(
   }
 );
 
-// Access shared file route
-router.get("/share/:shareToken", (req: Request, res: Response, next) => {
-  // Add CORS headers for shared files
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PATCH, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
-  next();
-}, async (req: Request, res: Response) => {
+// Enhanced access shared file route with permission validation
+router.get("/share/:shareToken", async (req: Request, res: Response) => {
   const { shareToken } = req.params;
 
   // Validate shareToken
@@ -795,15 +801,25 @@ router.get("/share/:shareToken", (req: Request, res: Response, next) => {
   }
 
   try {
-    // Check if permission exists and file is not deleted
+    // Check if permission exists and is valid
     const { data: permission, error: permissionError } = await supabase
       .from("permissions")
-      .select("file_id, role")
+      .select("file_id, role, can_download, can_preview, expires_at, max_access_count, access_count")
       .eq("share_token", shareToken)
       .single();
 
     if (permissionError || !permission) {
       return res.status(404).json({ error: "Invalid or expired share link" });
+    }
+
+    // Check if link has expired
+    if (permission.expires_at && new Date() > new Date(permission.expires_at)) {
+      return res.status(403).json({ error: "Share link has expired" });
+    }
+
+    // Check if max access count reached
+    if (permission.max_access_count && permission.access_count >= permission.max_access_count) {
+      return res.status(403).json({ error: "Share link access limit reached" });
     }
 
     // Fetch file details
@@ -818,21 +834,36 @@ router.get("/share/:shareToken", (req: Request, res: Response, next) => {
       return res.status(404).json({ error: "File not found or deleted" });
     }
 
-    // Generate signed URL (expires in 1 hour)
-    const { data: signedUrlData, error: signedUrlError } =
-      await supabase.storage
-        .from("drive_files")
-        .createSignedUrl(file.path, 3600); // 3600 seconds = 1 hour
+    // Update access count
+    await supabase
+      .from("permissions")
+      .update({ access_count: permission.access_count + 1 })
+      .eq("share_token", shareToken);
 
-    if (signedUrlError) {
-      throw signedUrlError;
+    // Get public URL for preview (if allowed)
+    let fileUrl = null;
+    if (permission.can_preview) {
+      const { data: urlData } = supabase.storage
+        .from("drive_files")
+        .getPublicUrl(file.path);
+      fileUrl = urlData.publicUrl;
     }
 
-    // Return metadata with signed URL
+    // Return metadata with appropriate permissions
     return res.status(200).json({
       message: "Shared file retrieved successfully",
-      file: { ...file, signedUrl: signedUrlData.signedUrl },
-      role: permission.role,
+      file: { 
+        ...file, 
+        publicUrl: fileUrl
+      },
+      permissions: {
+        role: permission.role,
+        can_download: permission.can_download,
+        can_preview: permission.can_preview,
+        expires_at: permission.expires_at,
+        access_count: permission.access_count + 1,
+        max_access_count: permission.max_access_count,
+      },
     });
   } catch (error: unknown) {
     const errorMessage =
@@ -840,6 +871,93 @@ router.get("/share/:shareToken", (req: Request, res: Response, next) => {
     res
       .status(500)
       .json({ error: `Shared file access failed: ${errorMessage}` });
+  }
+});
+
+// Enhanced shared file download route
+router.get("/share/:shareToken/download", async (req: Request, res: Response) => {
+  const { shareToken } = req.params;
+
+  // Validate shareToken
+  if (!isValidShareToken(shareToken)) {
+    return res.status(400).json({ error: "Invalid share token format" });
+  }
+
+  try {
+    // Check if permission exists and allows download
+    const { data: permission, error: permissionError } = await supabase
+      .from("permissions")
+      .select("file_id, role, can_download, expires_at, max_access_count, access_count")
+      .eq("share_token", shareToken)
+      .single();
+
+    if (permissionError || !permission) {
+      return res.status(404).json({ error: "Invalid or expired share link" });
+    }
+
+    // Check download permission
+    if (!permission.can_download) {
+      return res.status(403).json({ error: "Download not allowed for this share link" });
+    }
+
+    // Check if link has expired
+    if (permission.expires_at && new Date() > new Date(permission.expires_at)) {
+      return res.status(403).json({ error: "Share link has expired" });
+    }
+
+    // Check if max access count reached
+    if (permission.max_access_count && permission.access_count >= permission.max_access_count) {
+      return res.status(403).json({ error: "Share link access limit reached" });
+    }
+
+    // Fetch file details
+    const { data: file, error: fileError } = await supabase
+      .from("files")
+      .select("id, name, path, size, format")
+      .eq("id", permission.file_id)
+      .is("deleted_at", null)
+      .single();
+
+    if (fileError || !file) {
+      return res.status(404).json({ error: "File not found or deleted" });
+    }
+
+    // Download file from storage
+    const { data: fileData, error: downloadError } = await supabase.storage
+      .from("drive_files")
+      .download(file.path);
+
+    if (downloadError || !fileData) {
+      console.error("Storage download error:", downloadError);
+      return res.status(500).json({ error: "Failed to download file from storage" });
+    }
+
+    // Update access count
+    await supabase
+      .from("permissions")
+      .update({ access_count: permission.access_count + 1 })
+      .eq("share_token", shareToken);
+
+    // Log download action
+    await logActivity(null, file.id, "shared_download", {
+      file_name: file.name,
+      share_token: shareToken,
+    });
+
+    // Set proper headers for file download
+    res.setHeader('Content-Type', file.format || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(file.name)}"`);
+    res.setHeader('Content-Length', file.size.toString());
+    res.setHeader('Cache-Control', 'no-cache');
+
+    // Convert blob to buffer and send
+    const buffer = await fileData.arrayBuffer();
+    res.send(Buffer.from(buffer));
+
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : "Unknown error";
+    console.error("Shared download failed:", errorMessage);
+    res.status(500).json({ error: `Download failed: ${errorMessage}` });
   }
 });
 
@@ -862,7 +980,7 @@ router.patch("/share/:shareToken", async (req: Request, res: Response) => {
     // Check if permission exists and is 'edit'
     const { data: permission, error: permissionError } = await supabase
       .from("permissions")
-      .select("file_id, role")
+      .select("file_id, role, expires_at, max_access_count, access_count")
       .eq("share_token", shareToken)
       .eq("role", "edit")
       .single();
@@ -871,6 +989,16 @@ router.patch("/share/:shareToken", async (req: Request, res: Response) => {
       return res
         .status(403)
         .json({ error: "Invalid share link or insufficient permissions" });
+    }
+
+    // Check if link has expired
+    if (permission.expires_at && new Date() > new Date(permission.expires_at)) {
+      return res.status(403).json({ error: "Share link has expired" });
+    }
+
+    // Check if max access count reached
+    if (permission.max_access_count && permission.access_count >= permission.max_access_count) {
+      return res.status(403).json({ error: "Share link access limit reached" });
     }
 
     // Fetch file details
@@ -955,27 +1083,31 @@ router.patch("/share/:shareToken", async (req: Request, res: Response) => {
       throw updateError;
     }
 
+    // Update access count
+    await supabase
+      .from("permissions")
+      .update({ access_count: permission.access_count + 1 })
+      .eq("share_token", shareToken);
+
     // Log edit action
-    await logActivity(null, file.id, "edit", {
+    await logActivity(null, file.id, "shared_edit", {
       old_name: file.name,
       new_name: name,
       share_token: shareToken,
     });
 
-    // Generate signed URL for updated file
-    const { data: signedUrlData, error: signedUrlError } =
-      await supabase.storage
-        .from("drive_files")
-        .createSignedUrl(file.path, 3600);
-
-    if (signedUrlError) {
-      throw signedUrlError;
-    }
+    // Get public URL for updated file
+    const { data: urlData } = supabase.storage
+      .from("drive_files")
+      .getPublicUrl(file.path);
 
     res.status(200).json({
       message: "Shared file updated successfully",
-      file: { ...updatedFile, signedUrl: signedUrlData.signedUrl },
-      role: permission.role,
+      file: { ...updatedFile, publicUrl: urlData.publicUrl },
+      permissions: {
+        role: permission.role,
+        access_count: permission.access_count + 1,
+      },
     });
   } catch (error: unknown) {
     const errorMessage =
@@ -983,6 +1115,292 @@ router.patch("/share/:shareToken", async (req: Request, res: Response) => {
     res
       .status(500)
       .json({ error: `Shared file update failed: ${errorMessage}` });
+  }
+});
+
+// Clipboard operations - Copy/Cut
+router.post('/:operation/:itemType/:itemId', authenticateJWT, async (req, res) => {
+  if (!req.user) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  
+  const { operation, itemType, itemId } = req.params;
+  const user = req.user as any;
+  
+  if (!['copy', 'cut'].includes(operation) || !['file', 'folder'].includes(itemType)) {
+    return res.status(400).json({ error: 'Invalid operation or type' });
+  }
+
+  try {
+    // Validate that the item exists and user has access
+    if (itemType === 'file') {
+      const { data: file, error } = await supabase
+        .from('files')
+        .select('id, name, user_id')
+        .eq('id', parseInt(itemId))
+        .eq('user_id', user.id)
+        .is('deleted_at', null)
+        .single();
+      
+      if (error || !file) {
+        return res.status(404).json({ error: 'File not found or access denied' });
+      }
+    } else {
+      const { data: folder, error } = await supabase
+        .from('folders')
+        .select('id, name, user_id')
+        .eq('id', parseInt(itemId))
+        .eq('user_id', user.id)
+        .is('deleted_at', null)
+        .single();
+      
+      if (error || !folder) {
+        return res.status(404).json({ error: 'Folder not found or access denied' });
+      }
+    }
+
+    // Clear existing clipboard items for this user
+    await supabase.from("user_clipboard").delete().eq("user_id", user.id);
+    
+    // Add to clipboard
+    const { error } = await supabase.from("user_clipboard").insert({
+      user_id: user.id,
+      item_id: parseInt(itemId),
+      item_type: itemType,
+      operation,
+    });
+    
+    if (error) {
+      return res.status(500).json({ error: error.message });
+    }
+    
+    res.json({ message: `${itemType} ${operation} operation added to clipboard` });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Paste operation
+router.post('/paste/:folderId?', authenticateJWT, async (req, res) => {
+  if (!req.user) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  
+  const { folderId } = req.params;
+  const user = req.user as any;
+  
+  try {
+    // Get clipboard contents
+    const { data: clipboard, error: clipboardError } = await supabase
+      .from("user_clipboard")
+      .select("*")
+      .eq("user_id", user.id)
+      .single();
+    
+    if (clipboardError || !clipboard) {
+      return res.status(404).json({ error: 'Clipboard empty' });
+    }
+
+    // Validate target folder if provided
+    if (folderId) {
+      const { data: targetFolder, error: folderError } = await supabase
+        .from("folders")
+        .select("id, user_id")
+        .eq("id", parseInt(folderId))
+        .eq("user_id", user.id)
+        .is("deleted_at", null)
+        .single();
+      
+      if (folderError || !targetFolder) {
+        return res.status(404).json({ error: 'Target folder not found or access denied' });
+      }
+    }
+
+    const targetFolderId = folderId ? parseInt(folderId) : null;
+
+    if (clipboard.item_type === 'file') {
+      if (clipboard.operation === 'cut') {
+        // Move file
+        const { data: updatedFile, error: moveError } = await supabase
+          .from("files")
+          .update({ folder_id: targetFolderId })
+          .eq("id", clipboard.item_id)
+          .eq("user_id", user.id)
+          .select("*")
+          .single();
+        
+        if (moveError) {
+          return res.status(500).json({ error: 'Failed to move file' });
+        }
+        
+        // Clear clipboard after cut
+        await supabase.from("user_clipboard").delete().eq("id", clipboard.id);
+        
+        // Log activity
+        await logActivity(user.id, clipboard.item_id, "move", {
+          operation: "cut_paste",
+          target_folder_id: targetFolderId,
+        });
+        
+        res.json({ 
+          message: 'File moved successfully',
+          file: updatedFile 
+        });
+      } else {
+        // Copy file
+        const { data: originalFile, error: fileError } = await supabase
+          .from("files")
+          .select("*")
+          .eq("id", clipboard.item_id)
+          .eq("user_id", user.id)
+          .single();
+        
+        if (fileError || !originalFile) {
+          return res.status(404).json({ error: 'Original file not found' });
+        }
+
+        // Download original file
+        const { data: fileData, error: downloadError } = await supabase.storage
+          .from("drive_files")
+          .download(originalFile.path);
+
+        if (downloadError || !fileData) {
+          return res.status(500).json({ error: 'Failed to copy file data' });
+        }
+
+        // Create new file path
+        const timestamp = Date.now();
+        const sanitizedFileName = originalFile.name.replace(/[^a-zA-Z0-9.-]/g, '_');
+        const copyName = `${originalFile.name.replace(/\.[^/.]+$/, "")} - Copy${path.extname(originalFile.name)}`;
+        const newPath = `${user.id}/${timestamp}_${sanitizedFileName}`;
+
+        // Upload copied file
+        const { error: uploadError } = await supabase.storage
+          .from("drive_files")
+          .upload(newPath, fileData, {
+            contentType: originalFile.format,
+          });
+
+        if (uploadError) {
+          return res.status(500).json({ error: 'Failed to upload copied file' });
+        }
+
+        // Create new file record
+        const { data: newFile, error: createError } = await supabase
+          .from("files")
+          .insert({
+            name: copyName,
+            size: originalFile.size,
+            format: originalFile.format,
+            path: newPath,
+            user_id: user.id,
+            folder_id: targetFolderId,
+            is_public: false,
+            visibility: 'private'
+          })
+          .select("*")
+          .single();
+
+        if (createError) {
+          // Cleanup uploaded file
+          await supabase.storage.from("drive_files").remove([newPath]);
+          return res.status(500).json({ error: 'Failed to create file record' });
+        }
+
+        // Create owner permission for new file
+        await supabase.from("permissions").insert({
+          file_id: newFile.id,
+          user_id: user.id,
+          role: "owner",
+          share_token: uuidv4(),
+        });
+
+        // Log activity
+        await logActivity(user.id, newFile.id, "copy", {
+          operation: "copy_paste",
+          original_file_id: clipboard.item_id,
+          target_folder_id: targetFolderId,
+        });
+
+        res.json({ 
+          message: 'File copied successfully',
+          file: newFile 
+        });
+      }
+    } else {
+      // Handle folder operations
+      if (clipboard.operation === 'cut') {
+        // Move folder
+        const { data: updatedFolder, error: moveError } = await supabase
+          .from("folders")
+          .update({ parent_id: targetFolderId })
+          .eq("id", clipboard.item_id)
+          .eq("user_id", user.id)
+          .select("*")
+          .single();
+        
+        if (moveError) {
+          return res.status(500).json({ error: 'Failed to move folder' });
+        }
+        
+        // Clear clipboard after cut
+        await supabase.from("user_clipboard").delete().eq("id", clipboard.id);
+        
+        // Log activity
+        await logActivity(user.id, clipboard.item_id, "move_folder", {
+          operation: "cut_paste",
+          target_folder_id: targetFolderId,
+        });
+        
+        res.json({ 
+          message: 'Folder moved successfully',
+          folder: updatedFolder 
+        });
+      } else {
+        // Copy folder (simplified - only copies folder, not contents)
+        const { data: originalFolder, error: folderError } = await supabase
+          .from("folders")
+          .select("*")
+          .eq("id", clipboard.item_id)
+          .eq("user_id", user.id)
+          .single();
+        
+        if (folderError || !originalFolder) {
+          return res.status(404).json({ error: 'Original folder not found' });
+        }
+
+        const copyName = `${originalFolder.name} - Copy`;
+
+        // Create new folder record
+        const { data: newFolder, error: createError } = await supabase
+          .from("folders")
+          .insert({
+            name: copyName,
+            user_id: user.id,
+            parent_id: targetFolderId,
+          })
+          .select("*")
+          .single();
+
+        if (createError) {
+          return res.status(500).json({ error: 'Failed to create folder copy' });
+        }
+
+        // Log activity
+        await logActivity(user.id, newFolder.id, "copy_folder", {
+          operation: "copy_paste",
+          original_folder_id: clipboard.item_id,
+          target_folder_id: targetFolderId,
+        });
+
+        res.json({ 
+          message: 'Folder copied successfully',
+          folder: newFolder 
+        });
+      }
+    }
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -1129,20 +1547,5 @@ router.get(
     }
   }
 );
-
-// Clipboard operations
-router.post("/clipboard/:operation/:itemType/:itemId", authenticateJWT, async (req, res) => {
-  // Implementation for copy/cut operations
-});
-
-// Paste operation
-router.post("/paste/:folderId?", authenticateJWT, async (req, res) => {
-  // Implementation for paste operations
-});
-
-// Enhanced sharing with permissions
-router.patch("/:fileId/permissions", authenticateJWT, async (req, res) => {
-  // Update file permissions (download, preview, etc.)
-});
 
 export default router;
