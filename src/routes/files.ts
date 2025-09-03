@@ -719,33 +719,26 @@ router.post(
   authenticateJWT,
   async (req: Request, res: Response) => {
     const user = req.user as any;
-    if (!user || (!user.id && typeof user.id !== 'number')) {
-      return res.status(401).json({ error: 'Unauthorized' });
+    if (!user || (!user.id && typeof user.id !== "number")) {
+      return res.status(401).json({ error: "Unauthorized" });
     }
+
     const { fileId } = req.params;
-    const { 
-      role, 
-      can_download = true, 
-      can_preview = true, 
-      expires_at = null, 
-      max_access_count = null 
+    const {
+      role,
+      can_download = true,
+      can_preview = true,
+      expires_at = null,
+      max_access_count = null,
     } = req.body;
 
-    // Validate fileId
-    if (!isValidFileId(fileId)) {
-      return res.status(400).json({ error: "Invalid file ID format" });
-    }
-
-    // Validate input
     if (!role || !["view", "edit"].includes(role)) {
-      return res
-        .status(400)
-        .json({ error: "Valid role (view or edit) is required" });
+      return res.status(400).json({ error: "Valid role (view or edit) is required" });
     }
 
     try {
-      // Check if file exists and user has 'owner' role
-      const { data: permission, error: permissionError } = await supabase
+      // Ensure caller is owner of file (adapt if your logic differs)
+      const { data: ownerPermission, error: ownerErr } = await supabase
         .from("permissions")
         .select("id")
         .eq("file_id", fileId)
@@ -753,32 +746,28 @@ router.post(
         .eq("role", "owner")
         .single();
 
-      if (permissionError || !permission) {
-        return res
-          .status(403)
-          .json({ error: "Unauthorized: Only the owner can share this file" });
+      if (ownerErr || !ownerPermission) {
+        return res.status(403).json({ error: "Unauthorized: Only the owner can share this file" });
       }
 
-      // Fetch file name for logging
-      const { data: file, error: fileError } = await supabase
+      // Verify file exists (for logging)
+      const { data: fileRow, error: fileErr } = await supabase
         .from("files")
-        .select("name")
+        .select("id, name")
         .eq("id", fileId)
         .single();
 
-      if (fileError || !file) {
+      if (fileErr || !fileRow) {
         return res.status(404).json({ error: "File not found" });
       }
 
-      // Generate unique share token
       const shareToken = uuidv4();
 
-      // Insert permission into Supabase with enhanced permissions
       const { data: newPermission, error: insertError } = await supabase
         .from("permissions")
         .insert({
           file_id: fileId,
-          user_id: null, // Null for public links
+          user_id: null,
           role,
           share_token: shareToken,
           can_download,
@@ -790,35 +779,31 @@ router.post(
         .select("id, file_id, role, share_token, can_download, can_preview, expires_at, max_access_count")
         .single();
 
-      if (insertError) {
-        throw insertError;
-      }
+      if (insertError) throw insertError;
 
-      // Log share action
       await logActivity(user.id, parseInt(fileId), "share", {
-        file_name: file.name,
-        role,
+        file_name: fileRow.name,
         share_token: shareToken,
         permissions: { can_download, can_preview, expires_at, max_access_count },
       });
 
-      // Generate shareable link - use proper base URL
       const baseUrl =
         process.env.NODE_ENV === "production"
-          ? "https://google-drive-frontend-2cxh.vercel.app"
+          ? process.env.FRONTEND_PROD_URL || "https://your-production-frontend.example"
           : process.env.FRONTEND_URL || "http://localhost:5173";
 
       const shareableLink = `${baseUrl}/share/${shareToken}`;
 
-      res.status(201).json({
+      return res.status(201).json({
         message: "File shared successfully",
         permission: newPermission,
         shareableLink,
+        token: shareToken,
       });
-    } catch (error: unknown) {
-      const errorMessage =
-        error instanceof Error ? error.message : "Unknown error";
-      res.status(500).json({ error: `File sharing failed: ${errorMessage}` });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      console.error("POST share error:", err);
+      return res.status(500).json({ error: `File sharing failed: ${message}` });
     }
   }
 );
@@ -826,141 +811,105 @@ router.post(
 // Enhanced access shared file route with permission validation
 router.get("/share/:shareToken", async (req: Request, res: Response) => {
   const { shareToken } = req.params;
+  console.log(`GET /share/${shareToken} called`);
 
-console.log(`Accessing shared file with token: ${shareToken}`);
+  if (!shareToken) return res.status(400).json({ error: "Missing share token" });
 
-// Validate shareToken
-if (!shareToken || !isValidShareToken(shareToken)) {
-  console.log(`Invalid share token format: ${shareToken}`);
-  return res.status(400).json({ error: "Invalid share token format" });
-}
+  try {
+    const { data: permission, error: permErr } = await supabase
+      .from("permissions")
+      .select("file_id, role, can_download, can_preview, expires_at, max_access_count, access_count")
+      .eq("share_token", shareToken)
+      .single();
 
-try {
-  // Check if permission exists and is valid
-  const { data: permission, error: permissionError } = await supabase
-    .from("permissions")
-    .select("file_id, role, can_download, can_preview, expires_at, max_access_count, access_count")
-    .eq("share_token", shareToken)
-    .single();
+    if (permErr || !permission) {
+      console.log("Share token not found:", shareToken);
+      return res.status(404).json({ error: "Invalid or expired share link" });
+    }
 
-  console.log(`Permission query result:`, { permission, error: permissionError });
-
-  if (permissionError || !permission) {
-    console.log(`Share link not found in database for token: ${shareToken}`);
-    return res.status(404).json({ error: "Invalid or expired share link" });
-  }
-
-    // Check if link has expired
     if (permission.expires_at && new Date() > new Date(permission.expires_at)) {
       return res.status(403).json({ error: "Share link has expired" });
     }
 
-    // Check if max access count reached
     if (permission.max_access_count && permission.access_count >= permission.max_access_count) {
       return res.status(403).json({ error: "Share link access limit reached" });
     }
 
-    // Fetch file details
-    const { data: file, error: fileError } = await supabase
+    const { data: file, error: fileErr } = await supabase
       .from("files")
       .select("id, name, size, format, path, user_id, folder_id, created_at")
       .eq("id", permission.file_id)
       .is("deleted_at", null)
       .single();
 
-    if (fileError || !file) {
+    if (fileErr || !file) {
+      console.log("File referenced by permission not found:", permission.file_id);
       return res.status(404).json({ error: "File not found or deleted" });
     }
 
-    // Update access count
+    // Increment access count (best-effort)
     await supabase
       .from("permissions")
       .update({ access_count: permission.access_count + 1 })
       .eq("share_token", shareToken);
 
-    // Get public URL for preview (if allowed)
-    let fileUrl = null;
-    if (permission.can_preview) {
-      const { data: urlData } = supabase.storage
-        .from("drive_files")
-        .getPublicUrl(file.path);
-      fileUrl = urlData.publicUrl;
+    // Try to build a public URL only if preview allowed and storage returns one
+    let publicUrl: string | null = null;
+    if (permission.can_preview && file.path) {
+      try {
+        // supabase.storage.from(...).getPublicUrl returns { data: { publicUrl } }
+        const { data: urlData } = await supabase.storage.from("drive_files").getPublicUrl(file.path);
+        publicUrl = urlData?.publicUrl ?? null;
+      } catch (e) {
+        console.warn("getPublicUrl failed for", file.path, e);
+      }
     }
 
-    // Return metadata with appropriate permissions
     return res.status(200).json({
       message: "Shared file retrieved successfully",
-      file: { 
-        ...file, 
-        publicUrl: fileUrl
-      },
+      file: { ...file, publicUrl },
       permissions: {
         role: permission.role,
         can_download: permission.can_download,
         can_preview: permission.can_preview,
         expires_at: permission.expires_at,
-        access_count: permission.access_count + 1,
+        access_count: (permission.access_count ?? 0) + 1,
         max_access_count: permission.max_access_count,
       },
     });
-  } catch (error: unknown) {
-    const errorMessage =
-      error instanceof Error ? error.message : "Unknown error";
-    res
-      .status(500)
-      .json({ error: `Shared file access failed: ${errorMessage}` });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    console.error("GET /share error:", err);
+    return res.status(500).json({ error: `Failed to fetch shared file: ${message}` });
   }
 });
 
 // Enhanced shared file download route
 router.get("/share/:shareToken/download", async (req: Request, res: Response) => {
   const { shareToken } = req.params;
-
-  // Validate shareToken
-  if (!isValidShareToken(shareToken)) {
-    return res.status(400).json({ error: "Invalid share token format" });
-  }
+  if (!shareToken) return res.status(400).json({ error: "Missing share token" });
 
   try {
-    // Check if permission exists and allows download
-    const { data: permission, error: permissionError } = await supabase
+    const { data: permission, error: permErr } = await supabase
       .from("permissions")
-      .select("file_id, role, can_download, expires_at, max_access_count, access_count")
+      .select("file_id, can_download, expires_at, max_access_count, access_count")
       .eq("share_token", shareToken)
       .single();
 
-    if (permissionError || !permission) {
-      return res.status(404).json({ error: "Invalid or expired share link" });
-    }
+    if (permErr || !permission) return res.status(404).json({ error: "Invalid or expired share link" });
+    if (!permission.can_download) return res.status(403).json({ error: "Download not allowed for this share link" });
+    if (permission.expires_at && new Date() > new Date(permission.expires_at)) return res.status(403).json({ error: "Share link has expired" });
+    if (permission.max_access_count && permission.access_count >= permission.max_access_count) return res.status(403).json({ error: "Share link access limit reached" });
 
-    // Check download permission
-    if (!permission.can_download) {
-      return res.status(403).json({ error: "Download not allowed for this share link" });
-    }
-
-    // Check if link has expired
-    if (permission.expires_at && new Date() > new Date(permission.expires_at)) {
-      return res.status(403).json({ error: "Share link has expired" });
-    }
-
-    // Check if max access count reached
-    if (permission.max_access_count && permission.access_count >= permission.max_access_count) {
-      return res.status(403).json({ error: "Share link access limit reached" });
-    }
-
-    // Fetch file details
-    const { data: file, error: fileError } = await supabase
+    const { data: file, error: fileErr } = await supabase
       .from("files")
       .select("id, name, path, size, format")
       .eq("id", permission.file_id)
       .is("deleted_at", null)
       .single();
 
-    if (fileError || !file) {
-      return res.status(404).json({ error: "File not found or deleted" });
-    }
+    if (fileErr || !file) return res.status(404).json({ error: "File not found or deleted" });
 
-    // Download file from storage
     const { data: fileData, error: downloadError } = await supabase.storage
       .from("drive_files")
       .download(file.path);
@@ -971,31 +920,20 @@ router.get("/share/:shareToken/download", async (req: Request, res: Response) =>
     }
 
     // Update access count
-    await supabase
-      .from("permissions")
-      .update({ access_count: permission.access_count + 1 })
-      .eq("share_token", shareToken);
+    await supabase.from("permissions").update({ access_count: permission.access_count + 1 }).eq("share_token", shareToken);
 
-    // Log download action
-    await logActivity(null, file.id, "shared_download", {
-      file_name: file.name,
-      share_token: shareToken,
-    });
+    // Send file with proper headers
+    res.setHeader("Content-Type", file.format || "application/octet-stream");
+    res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(file.name)}"`);
+    if (file.size) res.setHeader("Content-Length", file.size.toString());
+    res.setHeader("Cache-Control", "no-cache");
 
-    // Set proper headers for file download
-    res.setHeader('Content-Type', file.format || 'application/octet-stream');
-    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(file.name)}"`);
-    res.setHeader('Content-Length', file.size.toString());
-    res.setHeader('Cache-Control', 'no-cache');
-
-    // Convert blob to buffer and send
-    const buffer = await fileData.arrayBuffer();
-    res.send(Buffer.from(buffer));
-
-  } catch (error: unknown) {
-    const errorMessage = error instanceof Error ? error.message : "Unknown error";
-    console.error("Shared download failed:", errorMessage);
-    res.status(500).json({ error: `Download failed: ${errorMessage}` });
+    const arrayBuf = await fileData.arrayBuffer();
+    res.send(Buffer.from(arrayBuf));
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    console.error("Download share error:", err);
+    return res.status(500).json({ error: `Download failed: ${message}` });
   }
 });
 
