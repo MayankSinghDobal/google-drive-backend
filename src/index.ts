@@ -184,8 +184,6 @@ app.get("/ping", (req, res) => {
 });
 
 // Routes
-// Routes
-// Routes
 console.log("Registering routes...");
 try {
   if (authRoutes) app.use("/auth", authRoutes);
@@ -194,27 +192,6 @@ try {
   if (searchRoutes) app.use("/search", searchRoutes);
   if (clipboardRoutes) app.use("/clipboard", clipboardRoutes);
   if (shareRoutes) app.use("/share", shareRoutes);
-  
-  // Register share routes AFTER other routes to avoid conflicts
-  if (fileRoutes) {
-    // Create a new router just for share routes
-    const shareRouter = express.Router();
-    
-    // Copy the share routes from fileRoutes
-    shareRouter.get("/:shareToken", async (req, res) => {
-      // This will be handled by the /:shareToken route in files.ts
-      req.url = `/share${req.url}`;
-      fileRoutes(req, res);
-    });
-    
-    shareRouter.get("/:shareToken/download", async (req, res) => {
-      // This will be handled by the /:shareToken/download route in files.ts
-      req.url = `/share${req.url}`;
-      fileRoutes(req, res);
-    });
-    
-    app.use("/share", shareRouter);
-  }
   
   console.log("Routes registered successfully");
 } catch (err) {
@@ -238,7 +215,8 @@ app.use("*", (req, res) => {
       "GET /folders/*",
       "POST /folders/*",
       "GET /search",
-      "POST /clipboard/*"
+      "POST /clipboard/*",
+      "GET /share/*"
     ]
   });
 });
