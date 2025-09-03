@@ -2,6 +2,7 @@ import express from "express";
 import passport from "passport";
 import cors from "cors";
 import dotenv from "dotenv";
+import { Router } from 'express';
 
 // Load .env file for local development
 console.log("Attempting to load .env file...");
@@ -30,7 +31,15 @@ if (missingVars.length > 0) {
 }
 
 // Import routes and configs with error handling
-let authRoutes, fileRoutes, folderRoutes, searchRoutes, clipboardRoutes, supabase;
+// Import routes and configs with error handling
+let authRoutes: Router | undefined;
+let fileRoutes: Router | undefined;
+let folderRoutes: Router | undefined;
+let searchRoutes: Router | undefined;
+let clipboardRoutes: Router | undefined;
+let shareRoutes: Router | undefined;
+let supabase;
+
 try {
   authRoutes = require("./routes/auth").default;
   console.log("Successfully imported auth routes");
@@ -65,14 +74,13 @@ try {
 } catch (err) {
   console.error("Error importing clipboard routes:", err);
 }
-let shareRoutes;
+
 try {
   shareRoutes = require("./routes/share").default;
   console.log("Successfully imported share routes");
 } catch (err) {
   console.error("Error importing share routes:", err);
 }
-
 try {
   require("./config/passport");
   console.log("Successfully imported passport config");
@@ -146,7 +154,14 @@ app.use((req, res, next) => {
   });
   next();
 });
-
+// ADD THIS NEW DEBUG MIDDLEWARE
+app.use('/share', (req, res, next) => {
+  console.log(`[SHARE DEBUG] ${req.method} ${req.path}`, {
+    shareRoutes: !!shareRoutes,
+    params: req.params,
+  });
+  next();
+});
 // Health check endpoints
 app.get("/", (req, res) => {
   res.json({
