@@ -88,7 +88,6 @@ const upload = multer({
     cb(null, true);
   }
 });
-
 // Log activity helper function
 async function logActivity(
   userId: number | null,
@@ -122,7 +121,9 @@ function isValidFileId(fileId: string): boolean {
 }
 
 function isValidShareToken(token: string): boolean {
-  return /^[a-fA-F0-9-]+$/.test(token);
+  // UUID v4 format check - share tokens should be UUIDs
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  return uuidRegex.test(token);
 }
 
 // Enhanced file upload route
@@ -360,10 +361,41 @@ router.get(
       });
 
       // Set proper headers for file download
-      res.setHeader('Content-Type', file.format || 'application/octet-stream');
-      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(file.name)}"`);
-      res.setHeader('Content-Length', file.size.toString());
-      res.setHeader('Cache-Control', 'no-cache');
+      // Set proper headers for file download
+const contentType = file.format || 'application/octet-stream';
+const fileExtension = path.extname(file.name).toLowerCase();
+
+// Map common extensions to correct MIME types if format is wrong
+const mimeTypeMap: { [key: string]: string } = {
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg', 
+  '.png': 'image/png',
+  '.gif': 'image/gif',
+  '.pdf': 'application/pdf',
+  '.mp4': 'video/mp4',
+  '.avi': 'video/x-msvideo',
+  '.mov': 'video/quicktime',
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
+  '.doc': 'application/msword',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xls': 'application/vnd.ms-excel',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.zip': 'application/zip',
+  '.txt': 'text/plain',
+  '.html': 'text/html',
+  '.css': 'text/css',
+  '.js': 'application/javascript',
+  '.json': 'application/json'
+};
+
+const finalContentType = mimeTypeMap[fileExtension] || contentType;
+
+res.setHeader('Content-Type', finalContentType);
+res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(file.name)}"`);
+res.setHeader('Content-Length', file.size.toString());
+res.setHeader('Cache-Control', 'no-cache');
+res.setHeader('Accept-Ranges', 'bytes');
 
       // Convert blob to buffer and send
       const buffer = await fileData.arrayBuffer();
@@ -795,22 +827,28 @@ router.post(
 router.get("/share/:shareToken", async (req: Request, res: Response) => {
   const { shareToken } = req.params;
 
-  // Validate shareToken
-  if (!isValidShareToken(shareToken)) {
-    return res.status(400).json({ error: "Invalid share token format" });
+console.log(`Accessing shared file with token: ${shareToken}`);
+
+// Validate shareToken
+if (!shareToken || !isValidShareToken(shareToken)) {
+  console.log(`Invalid share token format: ${shareToken}`);
+  return res.status(400).json({ error: "Invalid share token format" });
+}
+
+try {
+  // Check if permission exists and is valid
+  const { data: permission, error: permissionError } = await supabase
+    .from("permissions")
+    .select("file_id, role, can_download, can_preview, expires_at, max_access_count, access_count")
+    .eq("share_token", shareToken)
+    .single();
+
+  console.log(`Permission query result:`, { permission, error: permissionError });
+
+  if (permissionError || !permission) {
+    console.log(`Share link not found in database for token: ${shareToken}`);
+    return res.status(404).json({ error: "Invalid or expired share link" });
   }
-
-  try {
-    // Check if permission exists and is valid
-    const { data: permission, error: permissionError } = await supabase
-      .from("permissions")
-      .select("file_id, role, can_download, can_preview, expires_at, max_access_count, access_count")
-      .eq("share_token", shareToken)
-      .single();
-
-    if (permissionError || !permission) {
-      return res.status(404).json({ error: "Invalid or expired share link" });
-    }
 
     // Check if link has expired
     if (permission.expires_at && new Date() > new Date(permission.expires_at)) {
